@@ -393,7 +393,7 @@ export function EditorialDashboard() {
         <div className="workspace">
           {view !== 'Übersicht' && <FilterBar filters={filters} onChange={setFilters} />}
 
-          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} />}
+          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} />}
           {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
           {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} />}
@@ -412,7 +412,7 @@ export function EditorialDashboard() {
   );
 }
 
-function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEditTask }: any) {
+function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEditTask, onOpenItem }: any) {
   const [taskPeople, setTaskPeople] = useState<string[]>(['Tom']);
   const [taskTimes, setTaskTimes] = useState<string[]>(['Überfällig']);
   const open = tasks.filter((task: any) => task.status !== 'erledigt');
@@ -442,7 +442,7 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
         <div className="panel-heading compact"><h2><CalendarDays /> Nächste Veröffentlichungen</h2><button type="button" onClick={() => onNavigate('Redaktionsplan')}>Alle anzeigen <ChevronRight /></button></div>
         <div className="publication-table">
           <div className="publication-head"><span>Datum</span><span>Titel</span><span>Kategorie</span><span>Status</span><span>Verantwortlich</span><span /></div>
-          {nextPosts.map((post: any, index: number) => { const item = itemFor(items, post.editorialItemId); return <div className="publication-row" key={post.id}>
+          {nextPosts.map((post: any, index: number) => { const item = itemFor(items, post.editorialItemId); return <div className="publication-row" key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenItem(item.id); } }} aria-label={`${item.title}: Details öffnen`}>
             <span className="publication-date">{fullDate(post.plannedDate)}</span>
             <span className={cn('post-thumb', `thumb-${index % 4}`)} aria-hidden="true"><b>{item.format === 'Schnupperkurs' ? 'SK' : item.format === 'Lied des Monats' ? 'LM' : item.format === 'Zertifizierung' ? 'ZE' : 'MF'}</b></span>
             <strong>{item.title}</strong>
