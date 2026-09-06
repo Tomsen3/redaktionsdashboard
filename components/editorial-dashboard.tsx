@@ -327,7 +327,9 @@ export function EditorialDashboard() {
     title: '',
     subtitle: '',
     eventStart: TODAY,
+    eventStartTime: '09:00',
     eventEnd: '',
+    eventEndTime: '17:00',
     publicationTargetDate: TODAY,
     eventReferenceDate: TODAY,
     materialReadyDate: '',
@@ -373,8 +375,8 @@ export function EditorialDashboard() {
       format_id: format.id,
       title: itemDraft.title.trim(),
       subtitle: itemDraft.subtitle.trim() || null,
-      event_start: format.logicType === 'event' && itemDraft.eventStart ? `${itemDraft.eventStart}T12:00:00Z` : null,
-      event_end: format.logicType === 'event' && itemDraft.eventEnd ? `${itemDraft.eventEnd}T12:00:00Z` : null,
+      event_start: format.logicType === 'event' && itemDraft.eventStart ? new Date(`${itemDraft.eventStart}T${itemDraft.eventStartTime || '09:00'}:00`).toISOString() : null,
+      event_end: format.logicType === 'event' && itemDraft.eventEnd ? new Date(`${itemDraft.eventEnd}T${itemDraft.eventEndTime || '17:00'}:00`).toISOString() : null,
       publication_target_date: format.logicType === 'publication' ? itemDraft.publicationTargetDate || null : null,
       event_reference_date: format.logicType === 'event_material' ? itemDraft.eventReferenceDate || null : null,
       material_ready_date: format.logicType === 'event_material' ? itemDraft.materialReadyDate || null : null,
@@ -832,15 +834,15 @@ function ItemCreateDialog({ open, formats, draft, setDraft, onChooseFormat, onSa
           <label htmlFor="item-format"><span>Format</span>
             <Select value={draft.formatId} onValueChange={(id) => onChooseFormat(id as string)}>
               <SelectTrigger id="item-format" className="task-form-select"><SelectValue /></SelectTrigger>
-              <SelectContent>{formats.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.name} ({entry.category})</SelectItem>)}</SelectContent>
+              <SelectContent>{formats.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.category === 'Rückblick/Zertifizierung' ? entry.name : `${entry.name} (${entry.category})`}</SelectItem>)}</SelectContent>
             </Select>
           </label>
           <label htmlFor="item-title"><span>Titel</span><Input id="item-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="z. B. Guitar Factory Herbst 2026" /></label>
           <label htmlFor="item-subtitle"><span>Untertitel (optional)</span><Input id="item-subtitle" value={draft.subtitle} onChange={(event) => setDraft({ ...draft, subtitle: event.target.value })} /></label>
 
           {logicType === 'event' && <>
-            <label htmlFor="item-event-start"><span>Beginn</span><Input id="item-event-start" type="date" value={draft.eventStart} onChange={(event) => setDraft({ ...draft, eventStart: event.target.value })} /></label>
-            <label htmlFor="item-event-end"><span>Ende (optional)</span><Input id="item-event-end" type="date" value={draft.eventEnd} onChange={(event) => setDraft({ ...draft, eventEnd: event.target.value })} /></label>
+            <label htmlFor="item-event-start"><span>Beginn</span><div style={{ display: 'flex', gap: 8 }}><Input id="item-event-start" type="date" value={draft.eventStart} onChange={(event) => setDraft({ ...draft, eventStart: event.target.value })} /><Input id="item-event-start-time" type="time" value={draft.eventStartTime} onChange={(event) => setDraft({ ...draft, eventStartTime: event.target.value })} style={{ maxWidth: 110 }} /></div></label>
+            <label htmlFor="item-event-end"><span>Ende (optional)</span><div style={{ display: 'flex', gap: 8 }}><Input id="item-event-end" type="date" value={draft.eventEnd} onChange={(event) => setDraft({ ...draft, eventEnd: event.target.value })} /><Input id="item-event-end-time" type="time" value={draft.eventEndTime} onChange={(event) => setDraft({ ...draft, eventEndTime: event.target.value })} style={{ maxWidth: 110 }} /></div></label>
           </>}
           {logicType === 'publication' && <label htmlFor="item-publication-date"><span>Ziel-Veröffentlichungsdatum</span><Input id="item-publication-date" type="date" value={draft.publicationTargetDate} onChange={(event) => setDraft({ ...draft, publicationTargetDate: event.target.value })} /></label>}
           {logicType === 'event_material' && <>
