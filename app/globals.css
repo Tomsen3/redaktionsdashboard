@@ -650,3 +650,13 @@ td small { font-size: .76rem; }
    weiter oben aktuell "gewinnt", und schneidet den Text in diesem schmalen
    Zwischenbereich sauber mit "..." ab, statt ihn überlaufen zu lassen. */
 .topbar-motto { overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+/* Fix: Textüberlauf in den Kennzahlen-Kacheln der Übersicht (z. B. "Offene
+   Aufgaben" wurde von der Nachbarkachel überdeckt, "Geplante Posts diese
+   Woche" brach in vier Einzelwort-Zeilen um). Ursache: .metric-value span
+   hatte zu wenig max-width und durfte laut overflow-wrap:normal kein
+   einzelnes Wort umbrechen. Etwas mehr Breite plus robuster Umbruch als
+   Sicherheitsnetz. Diese Regel muss am Dateiende stehen, da mehrere
+   .metric-value-Blöcke weiter oben ohne Media-Query-Kapselung existieren
+   und laut CSS-Kaskade sonst die spätere Regel gewinnt. */
+.metric-value span { max-width: 150px; overflow-wrap: anywhere; }
