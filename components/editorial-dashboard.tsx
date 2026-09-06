@@ -27,7 +27,7 @@ import {
 import { cn } from '@/lib/utils';
 import { addDays, mondayOfWeek, movePost, postingDensity, reassignTask as validateReassign } from '@/lib/editorial-engine.mjs';
 import { supabase } from '@/lib/supabase-client';
-import { mapItem, mapMaterial, mapPost, mapTask } from '@/lib/data-mappers';
+import { mapItem, mapMaterial, mapPost, mapQuickLink, mapTask } from '@/lib/data-mappers';
 
 type View = 'Übersicht' | 'Redaktionsplan' | 'Kalender' | 'Aufgaben' | 'Materialien';
 type Filters = { person: string; time: string; status: string; format: string };
@@ -126,6 +126,7 @@ export function EditorialDashboard() {
   const [posts, setPosts] = useState<any[]>([]);
   const [tasks, setTasks] = useState<any[]>([]);
   const [materials, setMaterials] = useState<any[]>([]);
+  const [quickLinks, setQuickLinks] = useState<any[]>([]);
   const [filters, setFilters] = useState<Filters>({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle' });
 
   // Auth-Session laden und auf Änderungen (Anmeldung/Abmeldung) reagieren.
@@ -142,21 +143,24 @@ export function EditorialDashboard() {
     let cancelled = false;
 
     const loadAll = async () => {
-      const [itemsRes, postsRes, tasksRes, materialsRes] = await Promise.all([
+      const [itemsRes, postsRes, tasksRes, materialsRes, quickLinksRes] = await Promise.all([
         supabase.from('editorial_items').select('*, editorial_formats(name, category, logic_type)').is('archived_at', null).order('created_at'),
         supabase.from('posts').select('*').is('archived_at', null).order('planned_date'),
         supabase.from('tasks').select('*').is('archived_at', null).order('due_date'),
         supabase.from('materials').select('*').order('due_date'),
+        supabase.from('quick_links').select('*').order('sort_order'),
       ]);
       if (cancelled) return;
       if (itemsRes.error) console.error('Redaktionsanlässe konnten nicht geladen werden', itemsRes.error);
       if (postsRes.error) console.error('Posts konnten nicht geladen werden', postsRes.error);
       if (tasksRes.error) console.error('Aufgaben konnten nicht geladen werden', tasksRes.error);
       if (materialsRes.error) console.error('Materialien konnten nicht geladen werden', materialsRes.error);
+      if (quickLinksRes.error) console.error('Schnellzugriff-Links konnten nicht geladen werden', quickLinksRes.error);
       setItems((itemsRes.data ?? []).map(mapItem));
       setPosts((postsRes.data ?? []).map(mapPost));
       setTasks((tasksRes.data ?? []).map(mapTask));
       setMaterials((materialsRes.data ?? []).map(mapMaterial));
+      setQuickLinks((quickLinksRes.data ?? []).map(mapQuickLink));
     };
 
     void loadAll();
@@ -178,6 +182,7 @@ export function EditorialDashboard() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, applyChange(setPosts, mapPost))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, applyChange(setTasks, mapTask))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'materials' }, applyChange(setMaterials, mapMaterial))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'quick_links' }, applyChange(setQuickLinks, mapQuickLink))
       .subscribe();
 
     return () => {
@@ -240,6 +245,26 @@ export function EditorialDashboard() {
   const detailPosts = posts.filter((post) => post.editorialItemId === openItemId).sort((a, b) => a.plannedDate.localeCompare(b.plannedDate));
   const detailTasks = tasks.filter((task) => task.editorialItemId === openItemId).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   const detailMaterials = materials.filter((material) => material.editorialItemId === openItemId);
+
+  const [editingLink, setEditingLink] = useState<any>(null);
+  const [linkDraft, setLinkDraft] = useState({ label: '', url: '' });
+
+  const startEditingLink = useCallback((link: any) => {
+    setEditingLink(link);
+    setLinkDraft({ label: link.label, url: link.url });
+  }, []);
+
+  const cancelLinkEdit = useCallback(() => setEditingLink(null), []);
+
+  const saveLinkEdit = useCallback(() => {
+    if (!editingLink || !linkDraft.label.trim()) return;
+    const changes = { label: linkDraft.label.trim(), url: linkDraft.url.trim() };
+    setQuickLinks((current) => current.map((link) => link.id === editingLink.id ? { ...link, ...changes } : link));
+    supabase.from('quick_links').update(changes).eq('id', editingLink.id).then(({ error }) => {
+      if (error) console.error('Schnellzugriff-Link konnte nicht gespeichert werden', error);
+    });
+    setEditingLink(null);
+  }, [editingLink, linkDraft]);
 
   const saveMovePost = useCallback(() => {
     if (!movingPost || !moveDate) return;
@@ -393,7 +418,7 @@ export function EditorialDashboard() {
         <div className="workspace">
           {view !== 'Übersicht' && <FilterBar filters={filters} onChange={setFilters} />}
 
-          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} />}
+          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} />}
           {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
           {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} />}
@@ -403,6 +428,7 @@ export function EditorialDashboard() {
         <TaskEditDialog items={items} editing={editingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} />
         <PostMoveDialog items={items} moving={movingPost} date={moveDate} setDate={setMoveDate} onSave={saveMovePost} onCancel={cancelMovePost} />
         <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} />
+        <QuickLinkEditDialog editing={editingLink} draft={linkDraft} setDraft={setLinkDraft} onSave={saveLinkEdit} onCancel={cancelLinkEdit} />
 
         <nav className="mobile-nav" aria-label="Mobile Hauptnavigation">{nav.map(({ name, label, icon: Icon }) => (
           <button key={name} className={view === name ? 'active' : ''} onClick={() => setView(name)}><Icon /><span>{name === 'Redaktionsplan' ? 'Anlässe' : label}</span></button>
@@ -412,7 +438,7 @@ export function EditorialDashboard() {
   );
 }
 
-function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEditTask, onOpenItem }: any) {
+function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEditTask, onOpenItem, quickLinks, onEditLink }: any) {
   const [taskPeople, setTaskPeople] = useState<string[]>(['Tom']);
   const [taskTimes, setTaskTimes] = useState<string[]>(['Überfällig']);
   const open = tasks.filter((task: any) => task.status !== 'erledigt');
@@ -478,7 +504,7 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
 
     <div className="overview-bottom">
       <section className="panel density-card"><div className="panel-heading compact"><h2><BarChart3 /> Postingdichte</h2></div><div className="density-content"><div className="mini-bars">{weekCounts.map((count: number, index: number) => <div key={index}><span style={{ height: `${count * 17}px` }} className={index === 2 ? 'current' : ''} /><small /></div>)}</div><div className="density-copy"><strong>Aktuelle Woche</strong><b>{conflict?.count || 0} Posts geplant</b><p>{conflict?.level === 'conflict' ? 'Das ist mehr als üblich.' : 'Im normalen Rahmen.'}</p><button type="button" onClick={() => onNavigate('Kalender')}>Details <ChevronRight /></button></div></div></section>
-      <section className="panel quick-links"><div className="panel-heading compact"><h2><Link2 /> Schnellzugriff</h2></div>{['Canva – Vorlagen','SharePoint – Bilder & Dokumente','Website – Termine','Instagram','Facebook','LinkedIn'].map((label) => <span key={label}><i>{label.slice(0,1)}</i>{label}<ExternalLink /></span>)}</section>
+      <section className="panel quick-links"><div className="panel-heading compact"><h2><Link2 /> Schnellzugriff</h2></div>{[...quickLinks].sort((a: any, b: any) => a.sortOrder - b.sortOrder).map((link: any) => <span key={link.id}><i>{link.label.slice(0, 1)}</i>{link.url ? <a href={link.url} target="_blank" rel="noreferrer">{link.label}</a> : <em>{link.label} (kein Link hinterlegt)</em>}<ExternalLink /><button type="button" className="quick-link-edit" onClick={() => onEditLink(link)} aria-label={`${link.label} bearbeiten`}><Pencil size={12} /></button></span>)}</section>
       <section className="visual-brand-card"><img src="/assets/editorial-music.png" alt="Notenblatt neben einer akustischen Gitarre" loading="lazy" /><div>Mehr als Musik.<br />Mehr als ein Moment.<br />Mehr Miteinander.<i /></div></section>
     </div>
   </>;
@@ -576,6 +602,23 @@ function PostMoveDialog({ items, moving, date, setDate, onSave, onCancel }: { it
           <label htmlFor="post-move-date"><span>Neues Datum</span><Input id="post-move-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
         </div>
         <DialogFooter><Button variant="outline" onClick={onCancel}>Abbrechen</Button><Button onClick={onSave} disabled={!date}>Verschieben</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Dialog zum Bearbeiten eines Schnellzugriff-Links (Label + URL). Nutzt dieselben
+// task-dialog/task-form-Klassen wie TaskEditDialog, damit sich am Design nichts ändert.
+function QuickLinkEditDialog({ editing, draft, setDraft, onSave, onCancel }: { editing: any; draft: { label: string; url: string }; setDraft: (draft: { label: string; url: string }) => void; onSave: () => void; onCancel: () => void }) {
+  return (
+    <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) onCancel(); }}>
+      <DialogContent className="task-dialog">
+        <DialogHeader><DialogTitle>Schnellzugriff bearbeiten</DialogTitle><DialogDescription>Beschriftung und Ziel-Link anpassen</DialogDescription></DialogHeader>
+        <div className="task-form">
+          <label htmlFor="link-label"><span>Beschriftung</span><Input id="link-label" value={draft.label} onChange={(event) => setDraft({ ...draft, label: event.target.value })} /></label>
+          <label htmlFor="link-url"><span>Link (URL)</span><Input id="link-url" type="url" placeholder="https://…" value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} /></label>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={onCancel}>Abbrechen</Button><Button onClick={onSave} disabled={!draft.label.trim()}>Speichern</Button></DialogFooter>
       </DialogContent>
     </Dialog>
   );

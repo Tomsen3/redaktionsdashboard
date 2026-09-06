@@ -81,6 +81,16 @@ export function mapMaterial(row: any) {
   };
 }
 
+export function mapQuickLink(row: any) {
+  return {
+    id: row.id,
+    slug: row.slug,
+    label: row.label,
+    url: row.url ?? '',
+    sortOrder: row.sort_order,
+  };
+}
+
 // UI-Statuswerte -> Spaltenname/Wert für Supabase-Updates.
 export const TASK_UPDATE_FIELDS: Record<string, string> = {
   title: 'title',

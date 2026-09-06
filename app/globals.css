@@ -660,3 +660,15 @@ td small { font-size: .76rem; }
    .metric-value-Blöcke weiter oben ohne Media-Query-Kapselung existieren
    und laut CSS-Kaskade sonst die spätere Regel gewinnt. */
 .metric-value span { max-width: 150px; overflow-wrap: anywhere; }
+
+/* Neu: Bearbeiten-Button für die Schnellzugriff-Links auf der Startseite
+   (bislang feste, nicht klickbare Platzhalter). Erweitert die bestehende
+   3-Spalten-Zeile (Icon-Kreis, Beschriftung, Link-Icon) um eine 4. Spalte
+   für den kleinen Stift. Muss am Dateiende stehen, siehe Hinweis beim
+   vorherigen .metric-value-Fix zur Kaskaden-Reihenfolge in dieser Datei. */
+.quick-links > span { grid-template-columns: 18px 1fr 14px 18px; }
+.quick-links > span a { color: inherit; text-decoration: none; }
+.quick-links > span a:hover { text-decoration: underline; }
+.quick-links > span em { font-style: normal; opacity: .6; }
+.quick-links > span button.quick-link-edit { border: 0; background: transparent; padding: 0; display: grid; place-items: center; color: #17614f; cursor: pointer; opacity: .55; }
+.quick-links > span button.quick-link-edit:hover { opacity: 1; }
