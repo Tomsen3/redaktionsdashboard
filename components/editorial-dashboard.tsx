@@ -1,0 +1,492 @@
+'use client';
+/* oxlint-disable typescript/no-explicit-any */
+
+import { useCallback, useEffect, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import {
+  Archive, BarChart3, Bell, CalendarDays, Check, ChevronRight, CircleUserRound,
+  ClipboardCheck, Clock3, ExternalLink, FileImage, Filter, Grid2X2, ImageIcon, LayoutList,
+  Link2, MoreVertical, PackageCheck, Pencil, Plus, Sparkles, Users, X,
+} from 'lucide-react';
+import type { CSSProperties } from 'react';
+import {
+  Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupContent,
+  SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu, SidebarMenuButton,
+  SidebarMenuItem, SidebarProvider, SidebarTrigger,
+} from '@/components/ui/sidebar';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Progress, ProgressLabel } from '@/components/ui/progress';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@/components/ui/select';
+import { cn } from '@/lib/utils';
+import { addDays, mondayOfWeek, postingDensity, reassignTask as validateReassign } from '@/lib/editorial-engine.mjs';
+import { supabase } from '@/lib/supabase-client';
+import { mapItem, mapMaterial, mapPost, mapTask } from '@/lib/data-mappers';
+
+type View = 'Übersicht' | 'Redaktionsplan' | 'Kalender' | 'Aufgaben' | 'Materialien';
+type Filters = { person: string; time: string; status: string; format: string };
+
+const TODAY = new Date().toISOString().slice(0, 10);
+const nav: { name: View; label: string; icon: typeof Grid2X2 }[] = [
+  { name: 'Übersicht', label: 'Startseite', icon: Grid2X2 },
+  { name: 'Redaktionsplan', label: 'Redaktionsanlässe', icon: LayoutList },
+  { name: 'Kalender', label: 'Kalender', icon: CalendarDays },
+  { name: 'Aufgaben', label: 'Aufgaben', icon: ClipboardCheck },
+  { name: 'Materialien', label: 'Material', icon: FileImage },
+];
+
+const formatDate = (value: string) => new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit' }).format(new Date(`${value}T12:00:00`));
+const fullDate = (value: string) => new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: 'short' }).format(new Date(`${value}T12:00:00`));
+const itemFor = (items: any[], id: string) => items.find((item) => item.id === id) ?? { title: '', format: '', category: '', people: [], publishOwner: '' };
+const statusLabel = (status: string) => ({ in_arbeit: 'in Arbeit', blockiert: 'blockiert', geplant: 'geplant', vorgesehen: 'vorgesehen', offen: 'offen', erledigt: 'erledigt' }[status] || status);
+const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TODAY ? 'Heute' : date <= addDays(TODAY, 6) ? 'Diese Woche' : 'Später';
+
+// Ordnet UI-Feldnamen den Supabase-Spalten zu, damit updateTask generisch bleibt.
+const TASK_COLUMN: Record<string, string> = { title: 'title', owner: 'owner_name', dueDate: 'due_date', status: 'status' };
+
+function FilterBar({ filters, onChange }: { filters: Filters; onChange: (filters: Filters) => void }) {
+  const choices = {
+    person: ['Alle', 'Tom', 'Norbert'],
+    time: ['Alle', 'Überfällig', 'Heute', 'Diese Woche', 'Später'],
+    status: ['Alle', 'offen', 'in_arbeit', 'geplant', 'blockiert', 'erledigt'],
+    format: ['Alle', 'Weiterbildungsmodul', 'Schnupperkurs', 'Lied des Monats', 'Zertifizierung'],
+  };
+  return (
+    <div className="filterbar" aria-label="Kombinierbare Filter">
+      <div className="filter-title"><Filter size={16} /> Filter kombinieren</div>
+      {(Object.keys(choices) as (keyof Filters)[]).map((key) => (
+        <Select key={key} value={filters[key]} onValueChange={(value) => onChange({ ...filters, [key]: value as string })}>
+          <SelectTrigger aria-label={key} className={cn('filter-select', filters[key] !== 'Alle' && 'active')}><SelectValue /></SelectTrigger>
+          <SelectContent>{choices[key].map((choice) => <SelectItem key={choice} value={choice}>{statusLabel(choice)}</SelectItem>)}</SelectContent>
+        </Select>
+      ))}
+      {Object.values(filters).some((value) => value !== 'Alle') && (
+        <Button variant="ghost" size="sm" onClick={() => onChange({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle' })}>
+          <X /> Zurücksetzen
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function Metric({ label, value, detail, tone = 'neutral', icon: Icon, action }: { label: string; value: string; detail: string; tone?: string; icon: typeof CalendarDays; action: string }) {
+  return <article className={cn('metric', `metric-${tone}`)}>
+    <Icon className="metric-icon" />
+    <div className="metric-value"><strong>{value}</strong><span>{label}</span></div>
+    <small>{detail}</small>
+    <button type="button">{action} <ChevronRight /></button>
+  </article>;
+}
+
+function AuthGate() {
+  const [email, setEmail] = useState('');
+  const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+
+  const sendLink = async () => {
+    if (!email.trim()) return;
+    setStatus('sending');
+    const { error } = await supabase.auth.signInWithOtp({ email: email.trim() });
+    setStatus(error ? 'error' : 'sent');
+  };
+
+  return (
+    <div className="auth-gate" style={{ display: 'grid', placeItems: 'center', minHeight: '100vh', padding: 24 }}>
+      <div style={{ maxWidth: 360, width: '100%', display: 'grid', gap: 16, textAlign: 'center' }}>
+        <div className="brand-copy" style={{ display: 'grid', justifyItems: 'center' }}>
+          <strong>Redaktionsdashboard</strong>
+          <span>Singende Krankenhäuser</span>
+        </div>
+        {status === 'sent'
+          ? <p>Anmeldelink an <strong>{email}</strong> gesendet. Bitte E-Mail-Postfach prüfen.</p>
+          : <>
+            <label htmlFor="auth-email" style={{ display: 'grid', gap: 6, textAlign: 'left' }}>
+              <span>E-Mail-Adresse</span>
+              <Input id="auth-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="tom@singende-krankenhaeuser.de" />
+            </label>
+            <Button onClick={sendLink} disabled={!email.trim() || status === 'sending'}>
+              {status === 'sending' ? 'Sende Link …' : 'Anmeldelink senden'}
+            </Button>
+            {status === 'error' && <p style={{ color: 'var(--destructive, crimson)' }}>Anmeldung fehlgeschlagen. Bitte erneut versuchen.</p>}
+          </>}
+      </div>
+    </div>
+  );
+}
+
+export function EditorialDashboard() {
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const [view, setView] = useState<View>('Übersicht');
+  const [items, setItems] = useState<any[]>([]);
+  const [posts, setPosts] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [materials, setMaterials] = useState<any[]>([]);
+  const [filters, setFilters] = useState<Filters>({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle' });
+
+  // Auth-Session laden und auf Änderungen (Anmeldung/Abmeldung) reagieren.
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  // Daten laden + Echtzeit-Synchronisierung, sobald eine Anmeldung besteht.
+  useEffect(() => {
+    if (!session) return;
+
+    let cancelled = false;
+
+    const loadAll = async () => {
+      const [itemsRes, postsRes, tasksRes, materialsRes] = await Promise.all([
+        supabase.from('editorial_items').select('*, editorial_formats(name, category, logic_type)').is('archived_at', null).order('created_at'),
+        supabase.from('posts').select('*').is('archived_at', null).order('planned_date'),
+        supabase.from('tasks').select('*').is('archived_at', null).order('due_date'),
+        supabase.from('materials').select('*').order('due_date'),
+      ]);
+      if (cancelled) return;
+      if (itemsRes.error) console.error('Redaktionsanlässe konnten nicht geladen werden', itemsRes.error);
+      if (postsRes.error) console.error('Posts konnten nicht geladen werden', postsRes.error);
+      if (tasksRes.error) console.error('Aufgaben konnten nicht geladen werden', tasksRes.error);
+      if (materialsRes.error) console.error('Materialien konnten nicht geladen werden', materialsRes.error);
+      setItems((itemsRes.data ?? []).map(mapItem));
+      setPosts((postsRes.data ?? []).map(mapPost));
+      setTasks((tasksRes.data ?? []).map(mapTask));
+      setMaterials((materialsRes.data ?? []).map(mapMaterial));
+    };
+
+    void loadAll();
+
+    // Upsert/Entfernen einer Zeile in einem State-Array anhand ihrer id.
+    const applyChange = <T,>(setter: (updater: (current: T[]) => T[]) => void, mapRow: (row: any) => T) =>
+      (payload: any) => {
+        setter((current) => {
+          if (payload.eventType === 'DELETE') return current.filter((entry: any) => entry.id !== payload.old.id);
+          const mapped = mapRow(payload.new);
+          const exists = current.some((entry: any) => (entry as any).id === (mapped as any).id);
+          return exists ? current.map((entry: any) => (entry.id === (mapped as any).id ? mapped : entry)) : [...current, mapped];
+        });
+      };
+
+    const channel = supabase
+      .channel('redaktionsdashboard-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'editorial_items' }, applyChange(setItems, mapItem))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, applyChange(setPosts, mapPost))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, applyChange(setTasks, mapTask))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'materials' }, applyChange(setMaterials, mapMaterial))
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      void supabase.removeChannel(channel);
+    };
+  }, [session]);
+
+  const density = postingDensity(posts);
+  const conflictWeekKey = Object.keys(density).find((key) => density[key].level === 'conflict') ?? mondayOfWeek(TODAY);
+  const conflict = density[conflictWeekKey];
+
+  const completeTask = useCallback((id: string) => {
+    setTasks((current) => current.map((task) => task.id === id ? { ...task, status: task.status === 'erledigt' ? 'offen' : 'erledigt' } : task));
+    const task = tasks.find((entry) => entry.id === id);
+    const nextStatus = task?.status === 'erledigt' ? 'offen' : 'erledigt';
+    supabase.from('tasks').update({ status: nextStatus }).eq('id', id).then(({ error }) => {
+      if (error) console.error('Aufgabe konnte nicht aktualisiert werden', error);
+    });
+  }, [tasks]);
+
+  const updateTask = useCallback((id: string, changes: Record<string, string>) => {
+    setTasks((current) => current.map((task) => task.id === id ? { ...task, ...changes } : task));
+    const columns = Object.fromEntries(
+      Object.entries(changes).map(([key, value]) => [TASK_COLUMN[key] ?? key, value]),
+    );
+    supabase.from('tasks').update(columns).eq('id', id).then(({ error }) => {
+      if (error) console.error('Aufgabe konnte nicht gespeichert werden', error);
+    });
+  }, []);
+
+  const reassignTaskTo = useCallback((id: string, owner: string) => {
+    setTasks((current) => validateReassign(current, id, owner));
+    supabase.from('tasks').update({ owner_name: owner }).eq('id', id).then(({ error }) => {
+      if (error) console.error('Übergabe konnte nicht gespeichert werden', error);
+    });
+  }, []);
+
+  const resolveConflict = useCallback(() => {
+    if (!conflict || conflict.level !== 'conflict') return;
+    const weekPosts = posts.filter((post) => mondayOfWeek(post.plannedDate) === conflictWeekKey && post.status !== 'entfallen');
+    const candidate = [...weekPosts].sort((a, b) => a.priority - b.priority)[0];
+    if (!candidate) return;
+    const newDate = addDays(candidate.plannedDate, 7);
+    setPosts((current) => current.map((post) => post.id === candidate.id ? { ...post, plannedDate: newDate, status: 'vorgesehen', manuallyAdjusted: true } : post));
+    supabase.from('posts').update({ planned_date: newDate, status: 'vorgesehen', manually_adjusted: true }).eq('id', candidate.id).then(({ error }) => {
+      if (error) console.error('Termin konnte nicht verschoben werden', error);
+    });
+    return candidate;
+  }, [conflict, conflictWeekKey, posts]);
+
+  useEffect(() => {
+    const context = document.modelContext;
+    if (!context?.registerTool) return;
+    const lifecycle = new AbortController();
+    const report = (error: unknown) => console.warn('WebMCP tool registration failed', error);
+    const register = (tool: Parameters<typeof context.registerTool>[0]) => {
+      try { void Promise.resolve(context.registerTool(tool, { signal: lifecycle.signal })).catch(report); } catch (error) { report(error); }
+    };
+    register({
+      name: 'reassign_editorial_task', title: 'Redaktionsaufgabe übergeben',
+      description: 'Weist eine vorhandene Redaktionsaufgabe Tom oder Norbert zu und speichert die Änderung.',
+      inputSchema: { type: 'object', properties: { taskId: { type: 'string' }, owner: { type: 'string', enum: ['Tom', 'Norbert'] } }, required: ['taskId', 'owner'], additionalProperties: false },
+      annotations: { readOnlyHint: false, untrustedContentHint: false },
+      execute(input: unknown) {
+        const taskId = typeof input === 'object' && input !== null && 'taskId' in input ? String(input.taskId) : '';
+        const owner = typeof input === 'object' && input !== null && 'owner' in input ? String(input.owner) : '';
+        reassignTaskTo(taskId, owner);
+        return { taskId, owner };
+      },
+    });
+    register({
+      name: 'complete_editorial_task', title: 'Redaktionsaufgabe abschließen',
+      description: 'Markiert eine vorhandene Aufgabe im sichtbaren Redaktionsdashboard als erledigt.',
+      inputSchema: { type: 'object', properties: { taskId: { type: 'string' } }, required: ['taskId'], additionalProperties: false },
+      annotations: { readOnlyHint: false, untrustedContentHint: false },
+      execute(input: unknown) {
+        const taskId = typeof input === 'object' && input !== null && 'taskId' in input ? String(input.taskId) : '';
+        const task = tasks.find((candidate) => candidate.id === taskId);
+        if (!task) throw new Error('Unbekannte taskId');
+        updateTask(taskId, { status: 'erledigt' });
+        return { taskId, status: 'erledigt' };
+      },
+    });
+    register({
+      name: 'apply_density_conflict_suggestion', title: 'Dichtekonflikt lösen',
+      description: 'Verschiebt den Post mit der niedrigsten Priorität in der überlasteten Kalenderwoche eine Woche nach hinten.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: false, untrustedContentHint: false },
+      execute() {
+        const moved = resolveConflict();
+        return moved ? { postId: moved.id, plannedDate: addDays(moved.plannedDate, 7) } : { moved: false };
+      },
+    });
+    return () => lifecycle.abort();
+  }, [tasks, updateTask, reassignTaskTo, resolveConflict]);
+
+  const visiblePosts = posts.filter((post) => {
+    const item = itemFor(items, post.editorialItemId);
+    return (filters.person === 'Alle' || item.people.includes(filters.person)) &&
+      (filters.time === 'Alle' || timeBucket(post.plannedDate) === filters.time) &&
+      (filters.status === 'Alle' || post.status === filters.status) &&
+      (filters.format === 'Alle' || item.format === filters.format);
+  });
+  const visibleTasks = tasks.filter((task) => {
+    const item = itemFor(items, task.editorialItemId);
+    return (filters.person === 'Alle' || task.owner === filters.person) &&
+      (filters.time === 'Alle' || timeBucket(task.dueDate) === filters.time) &&
+      (filters.status === 'Alle' || task.status === filters.status) &&
+      (filters.format === 'Alle' || item.format === filters.format);
+  }).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const visibleMaterials = materials.filter((material) => {
+    const item = itemFor(items, material.editorialItemId);
+    return (filters.person === 'Alle' || item.people.includes(filters.person)) &&
+      (filters.time === 'Alle' || timeBucket(material.dueDate) === filters.time) &&
+      (filters.status === 'Alle' || material.status === filters.status) &&
+      (filters.format === 'Alle' || item.format === filters.format);
+  });
+
+  if (session === undefined) return null;
+  if (session === null) return <AuthGate />;
+
+  return (
+    <SidebarProvider style={{ '--sidebar-width': '218px' } as CSSProperties}>
+      <Sidebar collapsible="icon" className="editorial-sidebar">
+        <SidebarHeader className="brand-lockup">
+          <div className="brand-mark"><img src="/assets/logo-singende-krankenhaeuser.png" alt="Logo Singende Krankenhäuser" width={70} height={112} loading="eager" /></div>
+          <div className="brand-copy"><strong>Singende</strong><span>Krankenhäuser</span></div>
+        </SidebarHeader>
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupLabel>Arbeitsbereich</SidebarGroupLabel>
+            <SidebarGroupContent><SidebarMenu>{nav.map(({ name, label, icon: Icon }) => (
+              <SidebarMenuItem key={name}><SidebarMenuButton isActive={view === name} tooltip={name} onClick={() => setView(name)}>
+                <Icon /><span>{label}</span>
+              </SidebarMenuButton></SidebarMenuItem>
+            ))}</SidebarMenu></SidebarGroupContent>
+          </SidebarGroup>
+          <SidebarGroup>
+            <SidebarGroupLabel>Verwaltung</SidebarGroupLabel>
+            <SidebarGroupContent><SidebarMenu>
+              <SidebarMenuItem><SidebarMenuButton tooltip="Formate & Regeln"><Sparkles /><span>Formate & Regeln</span></SidebarMenuButton></SidebarMenuItem>
+              <SidebarMenuItem><SidebarMenuButton tooltip="Archiv"><Archive /><span>Archiv</span></SidebarMenuButton></SidebarMenuItem>
+            </SidebarMenu></SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+        <SidebarFooter className="sidebar-brand-footer">
+          <div className="sidebar-brand-blob"><span>Musik</span><span>Mensch</span><span>Miteinander</span></div>
+        </SidebarFooter>
+      </Sidebar>
+
+      <SidebarInset>
+        <header className="topbar">
+          <div className="topbar-title"><SidebarTrigger className="md:hidden" /><div><strong>Redaktionsdashboard</strong><span>Gemeinsam mehr Musik im Leben</span></div></div>
+          <div className="topbar-motto">Singen. Verbinden. Wirken.</div>
+          <div className="topbar-user">
+            <span>Angemeldet als {session.user.email}</span>
+            <Button variant="ghost" size="sm" onClick={() => supabase.auth.signOut()}>Abmelden</Button>
+          </div>
+        </header>
+
+        <div className="workspace">
+          {view !== 'Übersicht' && <FilterBar filters={filters} onChange={setFilters} />}
+
+          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} />}
+          {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} />}
+          {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} />}
+          {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onUpdate={updateTask} />}
+          {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} />}
+        </div>
+
+        <nav className="mobile-nav" aria-label="Mobile Hauptnavigation">{nav.map(({ name, label, icon: Icon }) => (
+          <button key={name} className={view === name ? 'active' : ''} onClick={() => setView(name)}><Icon /><span>{name === 'Redaktionsplan' ? 'Anlässe' : label}</span></button>
+        ))}</nav>
+      </SidebarInset>
+    </SidebarProvider>
+  );
+}
+
+function Overview({ items, posts, tasks, conflict, onNavigate, onResolve }: any) {
+  const [taskPeople, setTaskPeople] = useState<string[]>(['Tom']);
+  const [taskTimes, setTaskTimes] = useState<string[]>(['Überfällig']);
+  const open = tasks.filter((task: any) => task.status !== 'erledigt');
+  const blocked = posts.filter((post: any) => post.status === 'blockiert');
+  const nextPosts = [...posts].sort((a, b) => a.plannedDate.localeCompare(b.plannedDate)).slice(0, 5);
+  const overviewTasks = [...open].filter((task: any) =>
+    (!taskPeople.length || taskPeople.includes(task.owner)) &&
+    (!taskTimes.length || taskTimes.includes(timeBucket(task.dueDate)))
+  ).sort((a: any, b: any) => a.dueDate.localeCompare(b.dueDate)).slice(0, 4);
+  const toggle = (value: string, values: string[], setter: (values: string[]) => void) => setter(values.includes(value) ? values.filter((entry) => entry !== value) : [...values, value]);
+  const weekCounts = [2, 3, conflict?.count || 3, 2];
+  return <>
+    <div className="overview-top">
+      <section className="metrics-grid">
+        <Metric label="Geplante Posts diese Woche" value={String(conflict?.count || 0)} detail="" tone="green" icon={CalendarDays} action="Zum Kalender" />
+        <Metric label="Offene Aufgaben" value={String(open.length)} detail="" tone="orange" icon={ClipboardCheck} action="Zu den Aufgaben" />
+        <Metric label={'Material\u00adprobleme'} value={String(blocked.length)} detail="" tone="danger" icon={ImageIcon} action="Details ansehen" />
+      </section>
+      <aside className="overview-actions">
+        <button type="button" className="primary-create" onClick={() => onNavigate('Redaktionsplan')}><Plus /> Neuer Redaktionsanlass</button>
+        <div className="brand-quote">„ Musik berührt dort,<br />wo Worte oft nicht reichen.“<span /></div>
+      </aside>
+    </div>
+
+    <div className="overview-middle">
+      <section className="panel publications-panel">
+        <div className="panel-heading compact"><h2><CalendarDays /> Nächste Veröffentlichungen</h2><button type="button" onClick={() => onNavigate('Redaktionsplan')}>Alle anzeigen <ChevronRight /></button></div>
+        <div className="publication-table">
+          <div className="publication-head"><span>Datum</span><span>Titel</span><span>Kategorie</span><span>Status</span><span>Verantwortlich</span><span /></div>
+          {nextPosts.map((post: any, index: number) => { const item = itemFor(items, post.editorialItemId); return <div className="publication-row" key={post.id}>
+            <span className="publication-date">{fullDate(post.plannedDate)}</span>
+            <span className={cn('post-thumb', `thumb-${index % 4}`)} aria-hidden="true"><b>{item.format === 'Schnupperkurs' ? 'SK' : item.format === 'Lied des Monats' ? 'LM' : item.format === 'Zertifizierung' ? 'ZE' : 'MF'}</b></span>
+            <strong>{item.title}</strong>
+            <span className="soft-category">{item.category?.split('/')[0]}</span>
+            <Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge>
+            <span>{item.publishOwner}</span><MoreVertical />
+          </div>; })}
+          {!nextPosts.length && <div className="overview-task-empty">Noch keine Postings geplant.</div>}
+        </div>
+      </section>
+      <aside className="overview-notices">
+        <section className="panel notices-panel"><div className="panel-heading compact"><h2><Bell /> Aktuelle Hinweise</h2></div>
+          <div className="notice danger"><i /><div><strong>{tasks.filter((t: any) => t.status !== 'erledigt' && t.dueDate < TODAY).length} Aufgaben überfällig</strong><button type="button" onClick={() => onNavigate('Aufgaben')}>Jetzt erledigen <ChevronRight /></button></div></div>
+          <div className="notice warning"><i /><div><strong>Hohe Postingdichte ({conflict?.count || 0} Posts)</strong>{conflict?.level === 'conflict' ? <button type="button" onClick={onResolve}>Vorschlag anwenden <ChevronRight /></button> : <button type="button" onClick={() => onNavigate('Kalender')}>Zum Kalender <ChevronRight /></button>}</div></div>
+          <div className="notice info"><i>i</i><div><strong>{blocked.length} Redaktionsanlässe mit fehlendem Material.</strong><button type="button" onClick={() => onNavigate('Materialien')}>Zum Material <ChevronRight /></button></div></div>
+        </section>
+        <div className="small-brand-card">Gemeinsames Singen<br />macht den Unterschied.<span /></div>
+      </aside>
+    </div>
+
+    <section className="panel overview-tasks">
+      <div className="panel-heading compact"><h2><ClipboardCheck /> Aufgaben</h2><span className="filter-hint">ⓘ Filter kombinierbar (mehrfach auswählbar)</span><button type="button" onClick={() => onNavigate('Aufgaben')}>Alle anzeigen <ChevronRight /></button></div>
+      <div className="task-chips" aria-label="Kombinierbare Aufgabenfilter">
+        <button type="button" className={!taskPeople.length && !taskTimes.length ? 'active' : ''} onClick={() => { setTaskPeople([]); setTaskTimes([]); }}>Alle</button>
+        {['Tom','Norbert'].map((person) => <button type="button" key={person} className={taskPeople.includes(person) ? 'active' : ''} onClick={() => toggle(person, taskPeople, setTaskPeople)}>{person}{taskPeople.includes(person) && ' ×'}</button>)}
+        {['Überfällig','Diese Woche'].map((time) => <button type="button" key={time} className={taskTimes.includes(time) ? 'active' : ''} onClick={() => toggle(time, taskTimes, setTaskTimes)}>{time}{taskTimes.includes(time) && ' ×'}</button>)}
+      </div>
+      <div className="overview-task-table"><div className="overview-task-head"><span>Aufgabe</span><span>Zugehöriger Post</span><span>Fällig bis</span><span>Posting am</span><span>Verantwortlich</span><span>Status</span></div>
+        {overviewTasks.map((task: any) => { const item = itemFor(items, task.editorialItemId); const post = posts.find((entry: any) => entry.id === task.postId); const overdue = task.dueDate < TODAY; return <div className="overview-task-row" key={task.id}><strong>{task.title}</strong><span>{item.title}</span><span className={overdue ? 'overdue-date' : ''}>{formatDate(task.dueDate)}</span><span>{post ? formatDate(post.plannedDate) : '—'}</span><span>{task.owner}</span><Badge className={cn('status-badge', overdue || task.blocked ? 'status-problem' : `status-${task.status}`)} variant={overdue || task.blocked ? 'destructive' : 'secondary'}>{task.blocked ? 'blockiert' : overdue ? 'Überfällig' : statusLabel(task.status)}</Badge></div>; })}
+        {!overviewTasks.length && <div className="overview-task-empty">Für diese Filterkombination gibt es aktuell keine Aufgabe.</div>}
+      </div>
+    </section>
+
+    <div className="overview-bottom">
+      <section className="panel density-card"><div className="panel-heading compact"><h2><BarChart3 /> Postingdichte</h2></div><div className="density-content"><div className="mini-bars">{weekCounts.map((count: number, index: number) => <div key={index}><span style={{ height: `${count * 17}px` }} className={index === 2 ? 'current' : ''} /><small /></div>)}</div><div className="density-copy"><strong>Aktuelle Woche</strong><b>{conflict?.count || 0} Posts geplant</b><p>{conflict?.level === 'conflict' ? 'Das ist mehr als üblich.' : 'Im normalen Rahmen.'}</p><button type="button" onClick={() => onNavigate('Kalender')}>Details <ChevronRight /></button></div></div></section>
+      <section className="panel quick-links"><div className="panel-heading compact"><h2><Link2 /> Schnellzugriff</h2></div>{['Canva – Vorlagen','SharePoint – Bilder & Dokumente','Website – Termine','Instagram','Facebook','LinkedIn'].map((label) => <span key={label}><i>{label.slice(0,1)}</i>{label}<ExternalLink /></span>)}</section>
+      <section className="visual-brand-card"><img src="/assets/editorial-music.png" alt="Notenblatt neben einer akustischen Gitarre" loading="lazy" /><div>Mehr als Musik.<br />Mehr als ein Moment.<br />Mehr Miteinander.<i /></div></section>
+    </div>
+  </>;
+}
+
+function EditorialPlan({ items, posts }: { items: any[]; posts: any[] }) {
+  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Veröffentlichungen</p><h1>Redaktionsplan</h1></div><Badge variant="outline">{posts.length} Ergebnisse</Badge></div>
+    <div className="desktop-table"><table><thead><tr><th>Datum</th><th>Inhalt</th><th>Posting</th><th>Status</th><th>Verantwortung</th><th>Kanäle</th><th><span className="sr-only">Details</span></th></tr></thead><tbody>{[...posts].sort((a,b) => a.plannedDate.localeCompare(b.plannedDate)).map((post) => { const item = itemFor(items, post.editorialItemId); return <tr key={post.id}><td><strong>{formatDate(post.plannedDate)}</strong>{post.lateEntry && <small>neu geplant</small>}</td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{post.type}{post.conditional && <small>bedingt</small>}</td><td><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge></td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td><div className="channel-dots" aria-label="Instagram Facebook LinkedIn"><i>IG</i><i>FB</i><i>IN</i></div></td><td><ChevronRight size={17} /></td></tr>; })}</tbody></table></div>
+    <div className="mobile-cards">{posts.map((post) => { const item = itemFor(items, post.editorialItemId); return <article className="plan-card" key={post.id}><div><span className="category-line">{item.format}</span><h3>{item.title}</h3></div><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge><div className="plan-card-row"><strong>{fullDate(post.plannedDate)}</strong><span>{post.type}</span></div><div className="meta"><span><Users /> {item.contentOwner} / {item.publishOwner}</span><span>IG · FB · IN</span></div></article>; })}</div>
+  </section>;
+}
+
+function CalendarView({ items, posts }: { items: any[]; posts: any[] }) {
+  const [cursor] = useState(() => { const d = new Date(`${TODAY}T12:00:00`); d.setDate(1); return d; });
+  const monthLabel = new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(cursor);
+  const firstWeekday = (cursor.getDay() + 6) % 7; // Montag = 0
+  const daysInMonth = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0).getDate();
+  const cells = Array.from({ length: Math.ceil((firstWeekday + daysInMonth) / 7) * 7 }, (_, index) => {
+    const dayNumber = index - firstWeekday + 1;
+    return dayNumber >= 1 && dayNumber <= daysInMonth ? dayNumber : 0;
+  });
+  const iso = (day: number) => `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return <section className="panel wide-panel calendar-panel"><div className="panel-heading"><div><p className="eyebrow">Monatsansicht</p><h1 style={{ textTransform: 'capitalize' }}>{monthLabel}</h1></div><div className="density-key"><span className="ok" />2–3 ideal <span className="danger" />mehr als 3</div></div>
+    <div className="weekday-row">{['Mo','Di','Mi','Do','Fr','Sa','So'].map((day) => <span key={day}>{day}</span>)}</div>
+    <div className="calendar-grid">{cells.map((day, index) => { const date = day > 0 ? iso(day) : ''; const dayPosts = posts.filter((post) => post.plannedDate === date); return <div key={index} className={cn('calendar-day', !date && 'muted-day', date === TODAY && 'today')}><span>{day > 0 ? day : ''}</span>{dayPosts.map((post) => <button key={post.id} aria-label={`${itemFor(items, post.editorialItemId).title}: ${post.type}`} className={cn('calendar-event', post.status === 'blockiert' && 'blocked')}><strong>{itemFor(items, post.editorialItemId).title}</strong><small>{post.type}</small></button>)}</div>; })}</div>
+  </section>;
+}
+
+function TasksView({ items, tasks, onComplete, onUpdate }: { items: any[]; tasks: any[]; onComplete: (id: string) => void; onUpdate: (id: string, changes: Record<string, string>) => void }) {
+  const [editing, setEditing] = useState<any>(null);
+  const [draft, setDraft] = useState({ title: '', owner: 'Tom', dueDate: '', status: 'offen' });
+  const startEditing = (task: any) => {
+    setEditing(task);
+    setDraft({ title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status });
+  };
+  const save = () => {
+    if (!editing || !draft.title.trim() || !draft.dueDate) return;
+    onUpdate(editing.id, { ...draft, title: draft.title.trim() });
+    setEditing(null);
+  };
+
+  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Nach Fälligkeit sortiert</p><h1>Aufgaben</h1></div><Badge variant="outline">{tasks.filter((task) => task.status !== 'erledigt').length} offen</Badge></div>
+    <div className="task-list">{tasks.map((task) => { const item = itemFor(items, task.editorialItemId); return <article key={task.id} className={cn('task-row', task.status === 'erledigt' && 'done', task.blocked && 'blocked-row')}><button className="task-check" onClick={() => onComplete(task.id)} aria-label={`${task.title} als erledigt markieren`}>{task.status === 'erledigt' && <Check />}</button><div className="task-date"><strong>{formatDate(task.dueDate)}</strong><small>{timeBucket(task.dueDate)}</small></div><div className="task-main"><span className="category-line">{item.format}</span><strong>{task.title}</strong><small>{item.title}</small></div><div className="task-owner"><CircleUserRound /><span>{task.owner}</span></div><div className="task-actions">{task.blocked ? <Badge className="status-badge status-problem" variant="destructive">blockiert</Badge> : <Badge className={cn('status-badge', `status-${task.status}`)} variant="secondary">{statusLabel(task.status)}</Badge>}<Button variant="ghost" size="icon-sm" onClick={() => startEditing(task)} aria-label={`${task.title} bearbeiten`}><Pencil /></Button></div></article>; })}{!tasks.length && <div className="empty-state"><PackageCheck /><h3>Keine Treffer</h3><p>Mit dieser Filterkombination sind keine Aufgaben offen.</p></div>}</div>
+
+    <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+      <DialogContent className="task-dialog">
+        <DialogHeader><DialogTitle>Aufgabe bearbeiten</DialogTitle><DialogDescription>{editing ? itemFor(items, editing.editorialItemId).title : ''}</DialogDescription></DialogHeader>
+        <div className="task-form">
+          <label htmlFor="task-title"><span>Aufgabe</span><Input id="task-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
+          <label htmlFor="task-owner"><span>Verantwortlich</span><Select value={draft.owner} onValueChange={(owner) => setDraft({ ...draft, owner: owner as string })}><SelectTrigger id="task-owner" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Tom">Tom</SelectItem><SelectItem value="Norbert">Norbert</SelectItem></SelectContent></Select></label>
+          <label htmlFor="task-due-date"><span>Fällig am</span><Input id="task-due-date" type="date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} /></label>
+          <label htmlFor="task-status"><span>Status</span><Select value={draft.status} onValueChange={(status) => setDraft({ ...draft, status: status as string })}><SelectTrigger id="task-status" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="offen">offen</SelectItem><SelectItem value="in_arbeit">in Arbeit</SelectItem><SelectItem value="erledigt">erledigt</SelectItem><SelectItem value="gestrichen">gestrichen</SelectItem></SelectContent></Select></label>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={() => setEditing(null)}>Abbrechen</Button><Button onClick={save} disabled={!draft.title.trim() || !draft.dueDate}>Änderungen speichern</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </section>;
+}
+
+function MaterialsView({ items, materials: visible }: { items: any[]; materials: any[] }) {
+  const present = visible.filter((material) => material.status === 'vorhanden').length;
+  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Pflichtmaterial und Quellen</p><h1>Materialien</h1></div><div className="material-progress"><Progress value={visible.length ? present / visible.length * 100 : 0}><ProgressLabel>Verfügbar</ProgressLabel><span className="progress-count">{present}/{visible.length}</span></Progress></div></div>
+    <div className="material-grid">{visible.map((material) => { const item = itemFor(items, material.editorialItemId); return <article className="material-card" key={material.id}><div className={cn('material-icon', material.status)}>{material.type === 'Bild' ? <FileImage /> : material.type === 'Audio' ? <Clock3 /> : <PackageCheck />}</div><div className="material-copy"><span className="category-line">{item.title}</span><strong>{material.title}</strong><small>{material.type} · Quelle: {material.source}</small></div><div className="material-state"><Badge className={cn('status-badge', `status-${material.status}`)} variant={material.status === 'vorhanden' ? 'secondary' : material.status === 'fehlt' ? 'destructive' : 'outline'}>{material.status}</Badge>{material.dueDate && <small>bis {formatDate(material.dueDate)}</small>}</div></article>; })}
+    {!visible.length && <div className="empty-state"><PackageCheck /><h3>Keine Materialien</h3><p>Für diese Filterkombination liegen keine Materialien vor.</p></div>}</div>
+  </section>;
+}
