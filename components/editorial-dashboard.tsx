@@ -20,6 +20,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Progress, ProgressLabel } from '@/components/ui/progress';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -48,7 +49,7 @@ const statusLabel = (status: string) => ({ in_arbeit: 'in Arbeit', blockiert: 'b
 const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TODAY ? 'Heute' : date <= addDays(TODAY, 6) ? 'Diese Woche' : 'Später';
 
 // Ordnet UI-Feldnamen den Supabase-Spalten zu, damit updateTask generisch bleibt.
-const TASK_COLUMN: Record<string, string> = { title: 'title', owner: 'owner_name', dueDate: 'due_date', status: 'status' };
+const TASK_COLUMN: Record<string, string> = { title: 'title', owner: 'owner_name', dueDate: 'due_date', status: 'status', priority: 'priority', notes: 'notes' };
 
 function FilterBar({ filters, onChange }: { filters: Filters; onChange: (filters: Filters) => void }) {
   const choices = {
@@ -215,20 +216,60 @@ export function EditorialDashboard() {
   }, []);
 
   const [editingTask, setEditingTask] = useState<any>(null);
-  const [taskDraft, setTaskDraft] = useState({ title: '', owner: 'Tom', dueDate: '', status: 'offen' });
+  const [creatingTask, setCreatingTask] = useState(false);
+  const [taskDraft, setTaskDraft] = useState({ title: '', owner: 'Tom', dueDate: '', status: 'offen', priority: 50, notes: '', editorialItemId: '' });
 
   const startEditingTask = useCallback((task: any) => {
     setEditingTask(task);
-    setTaskDraft({ title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status });
+    setCreatingTask(false);
+    setTaskDraft({ title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status, priority: task.priority ?? 50, notes: task.notes ?? '', editorialItemId: task.editorialItemId });
   }, []);
 
-  const saveTaskEdit = useCallback(() => {
-    if (!editingTask || !taskDraft.title.trim() || !taskDraft.dueDate) return;
-    updateTask(editingTask.id, { ...taskDraft, title: taskDraft.title.trim() });
+  const startCreatingTask = useCallback(() => {
     setEditingTask(null);
-  }, [editingTask, taskDraft, updateTask]);
+    setCreatingTask(true);
+    setTaskDraft({ title: '', owner: 'Tom', dueDate: TODAY, status: 'offen', priority: 50, notes: '', editorialItemId: items[0]?.id ?? '' });
+  }, [items]);
 
-  const cancelTaskEdit = useCallback(() => setEditingTask(null), []);
+  const saveTaskEdit = useCallback(() => {
+    if (!taskDraft.title.trim() || !taskDraft.dueDate) return;
+    if (editingTask) {
+      updateTask(editingTask.id, { title: taskDraft.title.trim(), owner: taskDraft.owner, dueDate: taskDraft.dueDate, status: taskDraft.status, priority: taskDraft.priority, notes: taskDraft.notes });
+      setEditingTask(null);
+      return;
+    }
+    if (creatingTask) {
+      if (!taskDraft.editorialItemId) return;
+      // Neue, manuell angelegte Aufgabe. Erscheint automatisch über die bereits
+      // bestehende Echtzeit-Subscription (postgres_changes INSERT), sobald
+      // Supabase die Zeile bestätigt hat – kein lokales Vor-Einfügen nötig.
+      supabase.from('tasks').insert({
+        editorial_item_id: taskDraft.editorialItemId,
+        title: taskDraft.title.trim(),
+        owner_name: taskDraft.owner,
+        due_date: taskDraft.dueDate,
+        status: taskDraft.status,
+        priority: taskDraft.priority,
+        notes: taskDraft.notes || null,
+        task_type: 'manuell',
+        auto_generated: false,
+      }).then(({ error }) => {
+        if (error) console.error('Aufgabe konnte nicht angelegt werden', error);
+      });
+      setCreatingTask(false);
+    }
+  }, [editingTask, creatingTask, taskDraft, updateTask]);
+
+  const cancelTaskEdit = useCallback(() => { setEditingTask(null); setCreatingTask(false); }, []);
+
+  const deleteTask = useCallback((id: string) => {
+    if (typeof window !== 'undefined' && !window.confirm('Diese Aufgabe wirklich löschen?')) return;
+    setTasks((current) => current.filter((task) => task.id !== id));
+    supabase.from('tasks').update({ archived_at: new Date().toISOString() }).eq('id', id).then(({ error }) => {
+      if (error) console.error('Aufgabe konnte nicht gelöscht werden', error);
+    });
+    setEditingTask(null);
+  }, []);
 
   const [movingPost, setMovingPost] = useState<any>(null);
   const [moveDate, setMoveDate] = useState('');
@@ -421,11 +462,11 @@ export function EditorialDashboard() {
           {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} />}
           {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
-          {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} />}
+          {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} onCreate={startCreatingTask} />}
           {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} />}
         </div>
 
-        <TaskEditDialog items={items} editing={editingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} />
+        <TaskEditDialog items={items} editing={editingTask} creating={creatingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} onDelete={deleteTask} />
         <PostMoveDialog items={items} moving={movingPost} date={moveDate} setDate={setMoveDate} onSave={saveMovePost} onCancel={cancelMovePost} />
         <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} />
         <QuickLinkEditDialog editing={editingLink} draft={linkDraft} setDraft={setLinkDraft} onSave={saveLinkEdit} onCancel={cancelLinkEdit} />
@@ -624,25 +665,33 @@ function QuickLinkEditDialog({ editing, draft, setDraft, onSave, onCancel }: { e
   );
 }
 
-function TaskEditDialog({ items, editing, draft, setDraft, onSave, onCancel }: { items: any[]; editing: any; draft: { title: string; owner: string; dueDate: string; status: string }; setDraft: (draft: { title: string; owner: string; dueDate: string; status: string }) => void; onSave: () => void; onCancel: () => void }) {
+function TaskEditDialog({ items, editing, creating, draft, setDraft, onSave, onCancel, onDelete }: { items: any[]; editing: any; creating: boolean; draft: { title: string; owner: string; dueDate: string; status: string; priority: number; notes: string; editorialItemId: string }; setDraft: (draft: any) => void; onSave: () => void; onCancel: () => void; onDelete: (id: string) => void }) {
+  const open = Boolean(editing) || creating;
   return (
-    <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) onCancel(); }}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onCancel(); }}>
       <DialogContent className="task-dialog">
-        <DialogHeader><DialogTitle>Aufgabe bearbeiten</DialogTitle><DialogDescription>{editing ? itemFor(items, editing.editorialItemId).title : ''}</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>{creating ? 'Neue Aufgabe' : 'Aufgabe bearbeiten'}</DialogTitle><DialogDescription>{editing ? itemFor(items, editing.editorialItemId).title : 'Manuell anlegen'}</DialogDescription></DialogHeader>
         <div className="task-form">
+          {creating && <label htmlFor="task-item"><span>Redaktionsanlass</span><Select value={draft.editorialItemId} onValueChange={(id) => setDraft({ ...draft, editorialItemId: id as string })}><SelectTrigger id="task-item" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent>{items.map((item) => <SelectItem key={item.id} value={item.id}>{item.title}</SelectItem>)}</SelectContent></Select></label>}
           <label htmlFor="task-title"><span>Aufgabe</span><Input id="task-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
           <label htmlFor="task-owner"><span>Verantwortlich</span><Select value={draft.owner} onValueChange={(owner) => setDraft({ ...draft, owner: owner as string })}><SelectTrigger id="task-owner" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Tom">Tom</SelectItem><SelectItem value="Norbert">Norbert</SelectItem></SelectContent></Select></label>
           <label htmlFor="task-due-date"><span>Fällig am</span><Input id="task-due-date" type="date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} /></label>
           <label htmlFor="task-status"><span>Status</span><Select value={draft.status} onValueChange={(status) => setDraft({ ...draft, status: status as string })}><SelectTrigger id="task-status" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="offen">offen</SelectItem><SelectItem value="in_arbeit">in Arbeit</SelectItem><SelectItem value="erledigt">erledigt</SelectItem><SelectItem value="gestrichen">gestrichen</SelectItem></SelectContent></Select></label>
+          <label htmlFor="task-priority"><span>Priorität (0–100)</span><Input id="task-priority" type="number" min={0} max={100} value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: Number(event.target.value) })} /></label>
+          <label htmlFor="task-notes"><span>Notiz</span><Textarea id="task-notes" value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} /></label>
         </div>
-        <DialogFooter><Button variant="outline" onClick={onCancel}>Abbrechen</Button><Button onClick={onSave} disabled={!draft.title.trim() || !draft.dueDate}>Änderungen speichern</Button></DialogFooter>
+        <DialogFooter>
+          {editing && <Button variant="destructive" onClick={() => onDelete(editing.id)} style={{ marginRight: 'auto' }}>Löschen</Button>}
+          <Button variant="outline" onClick={onCancel}>Abbrechen</Button>
+          <Button onClick={onSave} disabled={!draft.title.trim() || !draft.dueDate || (creating && !draft.editorialItemId)}>{creating ? 'Anlegen' : 'Änderungen speichern'}</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
-function TasksView({ items, tasks, onComplete, onEdit }: { items: any[]; tasks: any[]; onComplete: (id: string) => void; onEdit: (task: any) => void }) {
-  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Nach Fälligkeit sortiert</p><h1>Aufgaben</h1></div><Badge variant="outline">{tasks.filter((task) => task.status !== 'erledigt').length} offen</Badge></div>
+function TasksView({ items, tasks, onComplete, onEdit, onCreate }: { items: any[]; tasks: any[]; onComplete: (id: string) => void; onEdit: (task: any) => void; onCreate: () => void }) {
+  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Nach Fälligkeit sortiert</p><h1>Aufgaben</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Badge variant="outline">{tasks.filter((task) => task.status !== 'erledigt').length} offen</Badge><Button size="sm" onClick={onCreate}><Plus /> Neue Aufgabe</Button></div></div>
     <div className="task-list">{tasks.map((task) => { const item = itemFor(items, task.editorialItemId); return <article key={task.id} className={cn('task-row', task.status === 'erledigt' && 'done', task.blocked && 'blocked-row')}><button className="task-check" onClick={() => onComplete(task.id)} aria-label={`${task.title} als erledigt markieren`}>{task.status === 'erledigt' && <Check />}</button><div className="task-date"><strong>{formatDate(task.dueDate)}</strong><small>{timeBucket(task.dueDate)}</small></div><div className="task-main"><span className="category-line">{item.format}</span><strong>{task.title}</strong><small>{item.title}</small></div><div className="task-owner"><CircleUserRound /><span>{task.owner}</span></div><div className="task-actions">{task.blocked ? <Badge className="status-badge status-problem" variant="destructive">blockiert</Badge> : <Badge className={cn('status-badge', `status-${task.status}`)} variant="secondary">{statusLabel(task.status)}</Badge>}<Button variant="ghost" size="icon-sm" onClick={() => onEdit(task)} aria-label={`${task.title} bearbeiten`}><Pencil /></Button></div></article>; })}{!tasks.length && <div className="empty-state"><PackageCheck /><h3>Keine Treffer</h3><p>Mit dieser Filterkombination sind keine Aufgaben offen.</p></div>}</div>
   </section>;
 }
