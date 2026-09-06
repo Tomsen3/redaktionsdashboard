@@ -6,7 +6,7 @@ import type { Session } from '@supabase/supabase-js';
 import {
   Archive, BarChart3, Bell, CalendarDays, Check, ChevronRight, CircleUserRound,
   ClipboardCheck, Clock3, ExternalLink, FileImage, Filter, Grid2X2, ImageIcon, LayoutList,
-  Link2, MapPin, PackageCheck, Pencil, Plus, Send, Sparkles, Users, X,
+  Link2, MapPin, PackageCheck, Pencil, Plus, Send, Sparkles, Trash2, Users, X,
 } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import {
@@ -31,7 +31,7 @@ import { supabase } from '@/lib/supabase-client';
 import { mapFormat, mapItem, mapMaterial, mapPost, mapPostRule, mapQuickLink, mapTask, mapTaskRule } from '@/lib/data-mappers';
 
 type View = 'Übersicht' | 'Redaktionsanlässe' | 'Redaktionsplan' | 'Kalender' | 'Aufgaben' | 'Materialien' | 'Formate & Regeln';
-type Filters = { person: string; time: string; status: string; format: string };
+type Filters = { person: string; time: string; status: string; format: string; item: string };
 
 const TODAY = new Date().toISOString().slice(0, 10);
 // 'Redaktionsplan' zeigt weiterhin die Postings-Liste (unveränderter Inhalt), heißt in der
@@ -64,7 +64,7 @@ const keyDateFor = (item: any) => (
 // Ordnet UI-Feldnamen den Supabase-Spalten zu, damit updateTask generisch bleibt.
 const TASK_COLUMN: Record<string, string> = { title: 'title', owner: 'owner_name', dueDate: 'due_date', status: 'status', priority: 'priority', notes: 'notes' };
 
-function FilterBar({ filters, onChange, formatNames }: { filters: Filters; onChange: (filters: Filters) => void; formatNames: string[] }) {
+function FilterBar({ filters, onChange, formatNames, itemOptions }: { filters: Filters; onChange: (filters: Filters) => void; formatNames: string[]; itemOptions: { id: string; title: string }[] }) {
   const choices = {
     person: ['Alle', 'Tom', 'Norbert'],
     time: ['Alle', 'Überfällig', 'Heute', 'Diese Woche', 'Später'],
@@ -74,14 +74,23 @@ function FilterBar({ filters, onChange, formatNames }: { filters: Filters; onCha
   return (
     <div className="filterbar" aria-label="Kombinierbare Filter">
       <div className="filter-title"><Filter size={16} /> Filter kombinieren</div>
-      {(Object.keys(choices) as (keyof Filters)[]).map((key) => (
+      {(Object.keys(choices) as (keyof typeof choices)[]).map((key) => (
         <Select key={key} value={filters[key]} onValueChange={(value) => onChange({ ...filters, [key]: value as string })}>
           <SelectTrigger aria-label={key} className={cn('filter-select', filters[key] !== 'Alle' && 'active')}><SelectValue /></SelectTrigger>
           <SelectContent>{choices[key].map((choice) => <SelectItem key={choice} value={choice}>{statusLabel(choice)}</SelectItem>)}</SelectContent>
         </Select>
       ))}
+      {/* Anlass-Filter: eigener Select, weil hier (anders als bei Format) die eindeutige id als
+          Wert genutzt werden muss – Anlass-Titel sind nicht garantiert eindeutig. */}
+      <Select value={filters.item} onValueChange={(value) => onChange({ ...filters, item: value as string })}>
+        <SelectTrigger aria-label="item" className={cn('filter-select', filters.item !== 'Alle' && 'active')}><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="Alle">Alle Anlässe</SelectItem>
+          {itemOptions.map((option) => <SelectItem key={option.id} value={option.id}>{option.title}</SelectItem>)}
+        </SelectContent>
+      </Select>
       {Object.values(filters).some((value) => value !== 'Alle') && (
-        <Button variant="ghost" size="sm" onClick={() => onChange({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle' })}>
+        <Button variant="ghost" size="sm" onClick={() => onChange({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle', item: 'Alle' })}>
           <X /> Zurücksetzen
         </Button>
       )}
@@ -146,12 +155,7 @@ export function EditorialDashboard() {
   useEffect(() => { formatsRef.current = formats; }, [formats]);
   const [postRules, setPostRules] = useState<any[]>([]);
   const [taskRules, setTaskRules] = useState<any[]>([]);
-  const [filters, setFilters] = useState<Filters>({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle' });
-  // Wird gesetzt, wenn von der Redaktionsanlässe-Übersicht aus gezielt zu den offenen Aufgaben
-  // eines einzelnen Anlasses gesprungen wird (siehe viewTasksForItem). Ergänzt die normale
-  // FilterBar-Filterung in der Aufgaben-Ansicht, bis Punkt 5 (Filter nach Redaktionsanlass in
-  // der FilterBar) das ggf. sauberer integriert.
-  const [taskItemFocus, setTaskItemFocus] = useState<string | null>(null);
+  const [filters, setFilters] = useState<Filters>({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle', item: 'Alle' });
 
   // Auth-Session laden und auf Änderungen (Anmeldung/Abmeldung) reagieren.
   useEffect(() => {
@@ -246,18 +250,12 @@ export function EditorialDashboard() {
     };
   }, [session]);
 
-  // Zentraler Menü-Wechsel: setzt einen aktiven Anlass-Fokus in der Aufgaben-Ansicht zurück,
-  // sobald regulär zu einem anderen Menüpunkt gewechselt wird (Sidebar/mobile Navigation).
-  const navigateTo = useCallback((next: View) => {
-    if (next !== 'Aufgaben') setTaskItemFocus(null);
-    setView(next);
-  }, []);
-
-  // Sprung von einer Zeile in "Redaktionsanlässe" zu den (gefilterten) Aufgaben genau dieses
-  // Anlasses. Setzt den Fokus bewusst, statt über navigateTo zu gehen, da dieser sonst sofort
-  // wieder zurückgesetzt würde.
+  // Sprung von einer Zeile in "Redaktionsanlässe" zu den Aufgaben genau dieses Anlasses: setzt
+  // den regulären Anlass-Filter (siehe FilterBar) und wechselt in die Aufgaben-Ansicht. Der
+  // Filter bleibt danach wie jeder andere FilterBar-Filter aktiv, bis er dort geändert oder über
+  // "Zurücksetzen" gelöscht wird.
   const viewTasksForItem = useCallback((itemId: string) => {
-    setTaskItemFocus(itemId);
+    setFilters((current) => ({ ...current, item: itemId }));
     setView('Aufgaben');
   }, []);
 
@@ -550,6 +548,39 @@ export function EditorialDashboard() {
     });
   }, []);
 
+  // Löscht ein einzelnes Posting (Soft-Delete über archived_at, analog zu deleteTask oben).
+  // Zugehörige Aufgaben (task.postId) bleiben bestehen – eine Kaskaden-Archivierung ist erst
+  // beim Löschen eines ganzen Redaktionsanlasses vorgesehen (separate Funktion).
+  const deletePost = useCallback((id: string) => {
+    if (typeof window !== 'undefined' && !window.confirm('Dieses Posting wirklich löschen?')) return;
+    setPosts((current) => current.filter((post) => post.id !== id));
+    supabase.from('posts').update({ archived_at: new Date().toISOString() }).eq('id', id).then(({ error }) => {
+      if (error) console.error('Posting konnte nicht gelöscht werden', error);
+    });
+  }, []);
+
+  // Löscht einen ganzen Redaktionsanlass (Soft-Delete über archived_at) inkl. Kaskaden-
+  // Archivierung aller zugehörigen Postings und Aufgaben. Nutzt dieselbe archived_at-Spalte wie
+  // deletePost/deleteTask – alle Ansichten filtern ohnehin schon nach "archived_at is null" beim
+  // Laden, dadurch verschwinden Postings/Aufgaben automatisch mit, ohne eigene Abfragen dafür.
+  const deleteItem = useCallback((id: string) => {
+    if (typeof window !== 'undefined' && !window.confirm('Diesen Redaktionsanlass wirklich löschen? Zugehörige Postings und Aufgaben werden ebenfalls archiviert.')) return;
+    const now = new Date().toISOString();
+    setItems((current) => current.filter((entry) => entry.id !== id));
+    setPosts((current) => current.filter((post) => post.editorialItemId !== id));
+    setTasks((current) => current.filter((task) => task.editorialItemId !== id));
+    setOpenItemId((current) => (current === id ? null : current));
+    supabase.from('editorial_items').update({ archived_at: now }).eq('id', id).then(({ error }) => {
+      if (error) console.error('Redaktionsanlass konnte nicht gelöscht werden', error);
+    });
+    supabase.from('posts').update({ archived_at: now }).eq('editorial_item_id', id).then(({ error }) => {
+      if (error) console.error('Postings des Anlasses konnten nicht archiviert werden', error);
+    });
+    supabase.from('tasks').update({ archived_at: now }).eq('editorial_item_id', id).then(({ error }) => {
+      if (error) console.error('Aufgaben des Anlasses konnten nicht archiviert werden', error);
+    });
+  }, []);
+
   const resolveConflict = useCallback(() => {
     if (!conflict || conflict.level !== 'conflict') return;
     const weekPosts = posts.filter((post) => mondayOfWeek(post.plannedDate) === conflictWeekKey && post.status !== 'entfallen');
@@ -614,31 +645,37 @@ export function EditorialDashboard() {
     return (filters.person === 'Alle' || item.people.includes(filters.person)) &&
       (filters.time === 'Alle' || timeBucket(post.plannedDate) === filters.time) &&
       (filters.status === 'Alle' || post.status === filters.status) &&
-      (filters.format === 'Alle' || item.format === filters.format);
+      (filters.format === 'Alle' || item.format === filters.format) &&
+      (filters.item === 'Alle' || post.editorialItemId === filters.item);
   });
   const visibleTasks = tasks.filter((task) => {
     const item = itemFor(items, task.editorialItemId);
-    return (!taskItemFocus || task.editorialItemId === taskItemFocus) &&
-      (filters.person === 'Alle' || task.owner === filters.person) &&
+    return (filters.person === 'Alle' || task.owner === filters.person) &&
       (filters.time === 'Alle' || timeBucket(task.dueDate) === filters.time) &&
       (filters.status === 'Alle' || task.status === filters.status) &&
-      (filters.format === 'Alle' || item.format === filters.format);
-  }).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
-  // Redaktionsanlässe selbst haben keinen eigenen "Status" (das gilt nur für Postings/Aufgaben) –
-  // der Status-Filter wird hier daher bewusst nicht angewendet, Person/Zeitraum/Format schon.
-  const visibleItems = items.filter((item) => {
-    const date = keyDateFor(item);
-    return (filters.person === 'Alle' || item.people.includes(filters.person)) &&
       (filters.format === 'Alle' || item.format === filters.format) &&
-      (filters.time === 'Alle' || (Boolean(date) && timeBucket(date) === filters.time));
-  });
+      (filters.item === 'Alle' || task.editorialItemId === filters.item);
+  }).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   const visibleMaterials = materials.filter((material) => {
     const item = itemFor(items, material.editorialItemId);
     return (filters.person === 'Alle' || item.people.includes(filters.person)) &&
       (filters.time === 'Alle' || timeBucket(material.dueDate) === filters.time) &&
       (filters.status === 'Alle' || material.status === filters.status) &&
-      (filters.format === 'Alle' || item.format === filters.format);
+      (filters.format === 'Alle' || item.format === filters.format) &&
+      (filters.item === 'Alle' || material.editorialItemId === filters.item);
   });
+  // Redaktionsanlässe selbst haben keinen eigenen "Status" (das gilt nur für Postings/Aufgaben) –
+  // der Status-Filter wird hier daher bewusst nicht angewendet, Person/Zeitraum/Format/Anlass schon.
+  const visibleItems = items.filter((item) => {
+    const date = keyDateFor(item);
+    return (filters.person === 'Alle' || item.people.includes(filters.person)) &&
+      (filters.format === 'Alle' || item.format === filters.format) &&
+      (filters.time === 'Alle' || (Boolean(date) && timeBucket(date) === filters.time)) &&
+      (filters.item === 'Alle' || item.id === filters.item);
+  });
+  // Für den Anlass-Select in der FilterBar: alle Anlässe (unabhängig von anderen aktiven
+  // Filtern), alphabetisch sortiert – analog zu formatNames unten.
+  const itemOptions = [...items].map((item) => ({ id: item.id, title: item.title })).sort((a, b) => a.title.localeCompare(b.title, 'de'));
 
   if (session === undefined) return null;
   if (session === null) return <AuthGate />;
@@ -654,7 +691,7 @@ export function EditorialDashboard() {
           <SidebarGroup>
             <SidebarGroupLabel>Arbeitsbereich</SidebarGroupLabel>
             <SidebarGroupContent><SidebarMenu>{nav.map(({ name, label, icon: Icon }) => (
-              <SidebarMenuItem key={name}><SidebarMenuButton isActive={view === name} tooltip={name} onClick={() => navigateTo(name)}>
+              <SidebarMenuItem key={name}><SidebarMenuButton isActive={view === name} tooltip={name} onClick={() => setView(name)}>
                 <Icon /><span>{label}</span>
               </SidebarMenuButton></SidebarMenuItem>
             ))}</SidebarMenu></SidebarGroupContent>
@@ -662,7 +699,7 @@ export function EditorialDashboard() {
           <SidebarGroup>
             <SidebarGroupLabel>Verwaltung</SidebarGroupLabel>
             <SidebarGroupContent><SidebarMenu>
-              <SidebarMenuItem><SidebarMenuButton isActive={view === 'Formate & Regeln'} tooltip="Formate & Regeln" onClick={() => navigateTo('Formate & Regeln')}><Sparkles /><span>Formate & Regeln</span></SidebarMenuButton></SidebarMenuItem>
+              <SidebarMenuItem><SidebarMenuButton isActive={view === 'Formate & Regeln'} tooltip="Formate & Regeln" onClick={() => setView("Formate & Regeln")}><Sparkles /><span>Formate & Regeln</span></SidebarMenuButton></SidebarMenuItem>
               <SidebarMenuItem><SidebarMenuButton tooltip="Archiv"><Archive /><span>Archiv</span></SidebarMenuButton></SidebarMenuItem>
             </SidebarMenu></SidebarGroupContent>
           </SidebarGroup>
@@ -683,25 +720,25 @@ export function EditorialDashboard() {
         </header>
 
         <div className="workspace">
-          {view !== 'Übersicht' && view !== 'Formate & Regeln' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} />}
+          {view !== 'Übersicht' && view !== 'Formate & Regeln' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} itemOptions={itemOptions} />}
 
-          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={navigateTo} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} onCreateItem={startCreatingItem} />}
-          {view === 'Redaktionsanlässe' && <EditorialItemsView items={visibleItems} tasks={tasks} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onViewTasksForItem={viewTasksForItem} />}
-          {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} />}
+          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} onCreateItem={startCreatingItem} />}
+          {view === 'Redaktionsanlässe' && <EditorialItemsView items={visibleItems} tasks={tasks} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onViewTasksForItem={viewTasksForItem} onDeleteItem={deleteItem} />}
+          {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onDeletePost={deletePost} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
-          {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} onCreate={startCreatingTask} focusItemTitle={taskItemFocus ? itemFor(items, taskItemFocus).title : null} onClearFocus={() => setTaskItemFocus(null)} />}
+          {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} onCreate={startCreatingTask} />}
           {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} />}
           {view === 'Formate & Regeln' && <FormatsAndRulesView formats={formats} postRules={postRules} />}
         </div>
 
         <TaskEditDialog items={items} editing={editingTask} creating={creatingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} onDelete={deleteTask} />
         <PostMoveDialog items={items} moving={movingPost} date={moveDate} setDate={setMoveDate} onSave={saveMovePost} onCancel={cancelMovePost} />
-        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onItemUpdated={applyItemUpdate} />
+        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onDeletePost={deletePost} onDeleteItem={deleteItem} onItemUpdated={applyItemUpdate} />
         <QuickLinkEditDialog editing={editingLink} draft={linkDraft} setDraft={setLinkDraft} onSave={saveLinkEdit} onCancel={cancelLinkEdit} />
         <ItemCreateDialog open={creatingItem} formats={formats} draft={itemDraft} setDraft={setItemDraft} onChooseFormat={chooseItemFormat} onSave={saveItemCreate} onCancel={cancelCreatingItem} saving={savingItem} error={itemSaveError} />
 
         <nav className="mobile-nav" aria-label="Mobile Hauptnavigation">{nav.map(({ name, label, mobileLabel, icon: Icon }) => (
-          <button key={name} className={view === name ? 'active' : ''} onClick={() => navigateTo(name)}><Icon /><span>{mobileLabel ?? label}</span></button>
+          <button key={name} className={view === name ? 'active' : ''} onClick={() => setView(name)}><Icon /><span>{mobileLabel ?? label}</span></button>
         ))}</nav>
       </SidebarInset>
     </SidebarProvider>
@@ -788,7 +825,7 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
 // plan-card), damit sich am Design nichts ändert. Klick auf die Zeile öffnet wie gewohnt die
 // Anlass-Detailansicht; der separate "Aufgaben"-Button springt direkt in die Aufgaben-Ansicht,
 // gefiltert auf genau diesen Anlass.
-function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTasksForItem }: { items: any[]; tasks: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void; onViewTasksForItem: (itemId: string) => void }) {
+function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTasksForItem, onDeleteItem }: { items: any[]; tasks: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void; onViewTasksForItem: (itemId: string) => void; onDeleteItem: (itemId: string) => void }) {
   const sorted = [...items].sort((a, b) => (keyDateFor(a) || '9999-12-31').localeCompare(keyDateFor(b) || '9999-12-31'));
   const openRow = (event: any, itemId: string) => { if (event.key && event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault?.(); onOpenItem(itemId); };
   const statsFor = (itemId: string) => {
@@ -796,17 +833,17 @@ function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTask
     return { total: itemTasks.length, done: itemTasks.filter((task) => task.status === 'erledigt').length };
   };
   return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Anlässe im Überblick</p><h1>Redaktionsanlässe</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Badge variant="outline">{sorted.length} Anlässe</Badge><Button size="sm" onClick={onCreateItem}><Plus /> Neuer Redaktionsanlass</Button></div></div>
-    <div className="desktop-table"><table><thead><tr><th>Termin/Ziel</th><th>Anlass</th><th>Fortschritt</th><th>Verantwortung</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <tr key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{date ? formatDate(date) : '—'}</strong></td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{total ? <Badge variant="outline">{done}/{total} erledigt</Badge> : <small>keine Aufgaben</small>}</td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td><Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }}>Aufgaben <ChevronRight size={14} /></Button></td></tr>; })}</tbody></table></div>
-    <div className="mobile-cards">{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <article className="plan-card" key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{date && ` · ${formatDate(date)}`}</span><h3>{item.title}</h3></div>{total ? <Badge variant="outline">{done}/{total}</Badge> : <small>keine Aufgaben</small>}<div className="plan-card-row"><strong>{date ? fullDate(date) : 'kein Termin'}</strong><span>{item.contentOwner} → {item.publishOwner}</span></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>Aufgaben <ChevronRight size={12} /></button></div></article>; })}</div>
+    <div className="desktop-table"><table><thead><tr><th>Termin/Ziel</th><th>Anlass</th><th>Fortschritt</th><th>Verantwortung</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <tr key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{date ? formatDate(date) : '—'}</strong></td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{total ? <Badge variant="outline">{done}/{total} erledigt</Badge> : <small>keine Aufgaben</small>}</td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }}>Aufgaben <ChevronRight size={14} /></Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onDeleteItem(item.id); }} aria-label={`${item.title}: Anlass löschen`}><Trash2 size={15} /></Button></td></tr>; })}</tbody></table></div>
+    <div className="mobile-cards">{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <article className="plan-card" key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{date && ` · ${formatDate(date)}`}</span><h3>{item.title}</h3></div>{total ? <Badge variant="outline">{done}/{total}</Badge> : <small>keine Aufgaben</small>}<div className="plan-card-row"><strong>{date ? fullDate(date) : 'kein Termin'}</strong><span>{item.contentOwner} → {item.publishOwner}</span></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>Aufgaben <ChevronRight size={12} /></button><button type="button" onClick={(event) => { event.stopPropagation(); onDeleteItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Trash2 size={12} /> Löschen</button></div></article>; })}</div>
     {!sorted.length && <div className="empty-state"><PackageCheck /><h3>Keine Redaktionsanlässe</h3><p>Für diese Filterkombination gibt es aktuell keine Anlässe.</p></div>}
   </section>;
 }
 
-function EditorialPlan({ items, posts, onOpenItem, onCreateItem }: { items: any[]; posts: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void }) {
+function EditorialPlan({ items, posts, onOpenItem, onCreateItem, onDeletePost }: { items: any[]; posts: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void; onDeletePost: (id: string) => void }) {
   const openRow = (event: any, itemId: string) => { if (event.key && event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault?.(); onOpenItem(itemId); };
   return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Veröffentlichungen</p><h1>Postings</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Badge variant="outline">{posts.length} Ergebnisse</Badge><Button size="sm" onClick={onCreateItem}><Plus /> Neuer Redaktionsanlass</Button></div></div>
-    <div className="desktop-table"><table><thead><tr><th>Datum</th><th>Inhalt</th><th>Posting</th><th>Status</th><th>Verantwortung</th><th>Kanäle</th><th><span className="sr-only">Details</span></th></tr></thead><tbody>{[...posts].sort((a,b) => a.plannedDate.localeCompare(b.plannedDate)).map((post) => { const item = itemFor(items, post.editorialItemId); return <tr key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{formatDate(post.plannedDate)}</strong>{post.lateEntry && <small>neu geplant</small>}</td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}{item.eventStart && ` · Termin: ${formatDate(item.eventStart)}${item.eventEnd && item.eventEnd !== item.eventStart ? `–${formatDate(item.eventEnd)}` : ''}`}</small></td><td>{post.type}{post.conditional && <small>bedingt</small>}</td><td><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge></td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td><div className="channel-dots" aria-label="Instagram Facebook LinkedIn"><i>IG</i><i>FB</i><i>IN</i></div></td><td><ChevronRight size={17} /></td></tr>; })}</tbody></table></div>
-    <div className="mobile-cards">{posts.map((post) => { const item = itemFor(items, post.editorialItemId); return <article className="plan-card" key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{item.eventStart && ` · Termin: ${formatDate(item.eventStart)}`}</span><h3>{item.title}</h3></div><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge><div className="plan-card-row"><strong>{fullDate(post.plannedDate)}</strong><span>{post.type}</span></div><div className="meta"><span><Users /> {item.contentOwner} / {item.publishOwner}</span><span>IG · FB · IN</span></div></article>; })}</div>
+    <div className="desktop-table"><table><thead><tr><th>Datum</th><th>Inhalt</th><th>Posting</th><th>Status</th><th>Verantwortung</th><th>Kanäle</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{[...posts].sort((a,b) => a.plannedDate.localeCompare(b.plannedDate)).map((post) => { const item = itemFor(items, post.editorialItemId); return <tr key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{formatDate(post.plannedDate)}</strong>{post.lateEntry && <small>neu geplant</small>}</td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}{item.eventStart && ` · Termin: ${formatDate(item.eventStart)}${item.eventEnd && item.eventEnd !== item.eventStart ? `–${formatDate(item.eventEnd)}` : ''}`}</small></td><td>{post.type}{post.conditional && <small>bedingt</small>}</td><td><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge></td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td><div className="channel-dots" aria-label="Instagram Facebook LinkedIn"><i>IG</i><i>FB</i><i>IN</i></div></td><td style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onDeletePost(post.id); }} aria-label={`${item.title}: Termin löschen`}><Trash2 size={15} /></Button><ChevronRight size={17} /></td></tr>; })}</tbody></table></div>
+    <div className="mobile-cards">{posts.map((post) => { const item = itemFor(items, post.editorialItemId); return <article className="plan-card" key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{item.eventStart && ` · Termin: ${formatDate(item.eventStart)}`}</span><h3>{item.title}</h3></div><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge><div className="plan-card-row"><strong>{fullDate(post.plannedDate)}</strong><span>{post.type}</span></div><div className="meta"><span><Users /> {item.contentOwner} / {item.publishOwner}</span><span>IG · FB · IN</span></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onDeletePost(post.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Trash2 size={14} /> Termin löschen</button></div></article>; })}</div>
   </section>;
 }
 
@@ -835,7 +872,7 @@ function CalendarView({ items, posts, onMovePost }: { items: any[]; posts: any[]
 // (TaskEditDialog / PostMoveDialog) obendrüber, statt eigene Bearbeitungslogik
 // zu duplizieren. Da diese Ansicht neu ist, gibt es dafür noch keine eigenen
 // CSS-Klassen im Stylesheet — Layout daher wie bei AuthGate per Inline-Style.
-function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, onMovePost, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onItemUpdated: (item: any) => void }) {
+function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, onMovePost, onDeletePost, onDeleteItem, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onDeletePost: (id: string) => void; onDeleteItem: (id: string) => void; onItemUpdated: (item: any) => void }) {
   const row: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 2fr 1fr auto', gap: 12, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border, #e5e5e5)', textAlign: 'left', width: '100%', background: 'none', border: 'none', borderBottomWidth: 1, borderBottomStyle: 'solid' };
   const sectionHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, margin: '20px 0 8px', fontSize: 14, fontWeight: 600 };
   const empty: CSSProperties = { fontSize: 13, opacity: 0.7, padding: '4px 0' };
@@ -915,7 +952,7 @@ function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, 
               <span>{formatDate(post.plannedDate)}</span>
               <span>{post.type}{post.conditional && <small> · bedingt</small>}</span>
               <Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge>
-              <Button variant="ghost" size="sm" onClick={() => onMovePost(post)}>Verschieben</Button>
+              <div style={{ display: 'flex', gap: 4 }}><Button variant="ghost" size="sm" onClick={() => onMovePost(post)}>Verschieben</Button><Button variant="ghost" size="sm" onClick={() => onDeletePost(post.id)} aria-label="Termin löschen"><Trash2 size={14} /></Button></div>
             </div>
           )) : <p style={empty}>Keine Postings vorhanden.</p>}
 
@@ -939,7 +976,10 @@ function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, 
             </div>
           )) : <p style={empty}>Keine Materialien vorhanden.</p>}
         </div>
-        <DialogFooter><Button variant="outline" onClick={onClose}>Schließen</Button></DialogFooter>
+        <DialogFooter>
+          {item && <Button variant="destructive" onClick={() => onDeleteItem(item.id)} style={{ marginRight: 'auto' }}><Trash2 size={14} /> Anlass löschen</Button>}
+          <Button variant="outline" onClick={onClose}>Schließen</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -1132,9 +1172,8 @@ function TaskEditDialog({ items, editing, creating, draft, setDraft, onSave, onC
   );
 }
 
-function TasksView({ items, tasks, onComplete, onEdit, onCreate, focusItemTitle, onClearFocus }: { items: any[]; tasks: any[]; onComplete: (id: string) => void; onEdit: (task: any) => void; onCreate: () => void; focusItemTitle?: string | null; onClearFocus?: () => void }) {
+function TasksView({ items, tasks, onComplete, onEdit, onCreate }: { items: any[]; tasks: any[]; onComplete: (id: string) => void; onEdit: (task: any) => void; onCreate: () => void }) {
   return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Nach Fälligkeit sortiert</p><h1>Aufgaben</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Badge variant="outline">{tasks.filter((task) => task.status !== 'erledigt').length} offen</Badge><Button size="sm" onClick={onCreate}><Plus /> Neue Aufgabe</Button></div></div>
-    {focusItemTitle && <div className="filterbar" aria-label="Aktiver Anlass-Filter"><Badge variant="outline">Gefiltert auf: {focusItemTitle}</Badge><Button variant="ghost" size="sm" onClick={onClearFocus}><X /> Filter aufheben</Button></div>}
     <div className="task-list">{tasks.map((task) => { const item = itemFor(items, task.editorialItemId); return <article key={task.id} className={cn('task-row', task.status === 'erledigt' && 'done', task.blocked && 'blocked-row')}><button className="task-check" onClick={() => onComplete(task.id)} aria-label={`${task.title} als erledigt markieren`}>{task.status === 'erledigt' && <Check />}</button><div className="task-date"><strong>{formatDate(task.dueDate)}</strong><small>{timeBucket(task.dueDate)}</small></div><div className="task-main"><span className="category-line">{item.format}</span><strong>{task.title}</strong><small>{item.title}</small></div><div className="task-owner"><CircleUserRound /><span>{task.owner}</span></div><div className="task-actions">{task.blocked ? <Badge className="status-badge status-problem" variant="destructive">blockiert</Badge> : <Badge className={cn('status-badge', `status-${task.status}`)} variant="secondary">{statusLabel(task.status)}</Badge>}<Button variant="ghost" size="icon-sm" onClick={() => onEdit(task)} aria-label={`${task.title} bearbeiten`}><Pencil /></Button></div></article>; })}{!tasks.length && <div className="empty-state"><PackageCheck /><h3>Keine Treffer</h3><p>Mit dieser Filterkombination sind keine Aufgaben offen.</p></div>}</div>
   </section>;
 }
