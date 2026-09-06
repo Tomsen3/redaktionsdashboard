@@ -30,7 +30,7 @@ import { addDays, generateSchedule, mondayOfWeek, movePost, postingDensity, reas
 import { supabase } from '@/lib/supabase-client';
 import { mapFormat, mapItem, mapMaterial, mapPost, mapPostRule, mapQuickLink, mapTask, mapTaskRule } from '@/lib/data-mappers';
 
-type View = 'Übersicht' | 'Redaktionsplan' | 'Kalender' | 'Aufgaben' | 'Materialien';
+type View = 'Übersicht' | 'Redaktionsplan' | 'Kalender' | 'Aufgaben' | 'Materialien' | 'Formate & Regeln';
 type Filters = { person: string; time: string; status: string; format: string };
 
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -583,7 +583,7 @@ export function EditorialDashboard() {
           <SidebarGroup>
             <SidebarGroupLabel>Verwaltung</SidebarGroupLabel>
             <SidebarGroupContent><SidebarMenu>
-              <SidebarMenuItem><SidebarMenuButton tooltip="Formate & Regeln"><Sparkles /><span>Formate & Regeln</span></SidebarMenuButton></SidebarMenuItem>
+              <SidebarMenuItem><SidebarMenuButton isActive={view === 'Formate & Regeln'} tooltip="Formate & Regeln" onClick={() => setView('Formate & Regeln')}><Sparkles /><span>Formate & Regeln</span></SidebarMenuButton></SidebarMenuItem>
               <SidebarMenuItem><SidebarMenuButton tooltip="Archiv"><Archive /><span>Archiv</span></SidebarMenuButton></SidebarMenuItem>
             </SidebarMenu></SidebarGroupContent>
           </SidebarGroup>
@@ -604,13 +604,14 @@ export function EditorialDashboard() {
         </header>
 
         <div className="workspace">
-          {view !== 'Übersicht' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} />}
+          {view !== 'Übersicht' && view !== 'Formate & Regeln' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} />}
 
           {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} onCreateItem={startCreatingItem} />}
           {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
           {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} onCreate={startCreatingTask} />}
           {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} />}
+          {view === 'Formate & Regeln' && <FormatsAndRulesView formats={formats} postRules={postRules} />}
         </div>
 
         <TaskEditDialog items={items} editing={editingTask} creating={creatingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} onDelete={deleteTask} />
@@ -866,6 +867,77 @@ function ItemCreateDialog({ open, formats, draft, setDraft, onChooseFormat, onSa
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const LOGIC_LABELS: Record<string, string> = {
+  event: 'Mit Termin',
+  publication: 'Frei veröffentlicht',
+  event_material: 'Nachbereitend',
+};
+
+// Kurze Zusatzerklärungen, die sich nicht aus den reinen Zahlen ergeben.
+// Schlüssel = Format-Slug in editorial_formats. Bei neuen Formaten einfach ergänzen.
+const FORMAT_NOTES: Record<string, string> = {
+  'mitgliederangebot': 'Ein Format für drei Angebote: Guitar Factory, Ukulele Factory, Singleiter in Aktion – der genaue Titel wird beim Anlegen frei vergeben.',
+  'besondere-veranstaltung': 'Deckt z. B. Sommerakademie, Come Together und Liedernächte ab.',
+  'zertifizierung': 'Das Posting selbst ist bereits der Rückblick – kein separater Rückblick-Post nötig.',
+  'rueckblick': 'Wird bei Bedarf als eigener Folge-Eintrag zu einem Weiterbildungsmodul oder einer Besonderen Veranstaltung angelegt.',
+  'impuls': 'Deckt auch Themen wie Kongress/Messe/Fachtagung und Tool/Artikel ab.',
+  'veranstaltungsueberblick': 'Wird manuell je nach Terminlage angelegt, kein automatischer Rhythmus.',
+};
+
+function describeOffset(offsetDays?: number) {
+  if (offsetDays == null) return '';
+  if (offsetDays < 0) return `${Math.abs(offsetDays)} Tage vorher`;
+  if (offsetDays > 0) return `${offsetDays} Tage danach`;
+  return 'am Termin selbst';
+}
+
+function formatTimingSummary(format: any, postRules: any[]) {
+  if (format.logicType === 'publication') return 'Kein fester Termin – wird frei eingeplant.';
+  const rules = postRules.filter((rule) => rule.formatId === format.id);
+  if (!rules.length) return 'Kein fester Automatismus hinterlegt – wird bei Bedarf individuell angelegt.';
+  const main = rules.find((rule) => rule.postType === 'Hauptankündigung');
+  const reminder = rules.find((rule) => rule.postType === 'Erinnerung');
+  const lastCall = rules.find((rule) => rule.postType === 'Last Call');
+  const parts: string[] = [];
+  if (main) parts.push(`Hauptpost ${describeOffset(main.offsetDays)}`);
+  if (reminder) parts.push(`Erinnerung ${describeOffset(reminder.offsetDays)}`);
+  if (lastCall) parts.push(`optionaler Last Call ${describeOffset(lastCall.offsetDays)}`);
+  return parts.join(' · ');
+}
+
+function FormatsAndRulesView({ formats, postRules }: { formats: any[]; postRules: any[] }) {
+  const grouped = formats.reduce((acc: Record<string, any[]>, format) => {
+    (acc[format.category] ||= []).push(format);
+    return acc;
+  }, {});
+  return (
+    <section className="panel wide-panel">
+      <div className="panel-heading"><div><p className="eyebrow">Wie die Automatik entscheidet</p><h1>Formate & Regeln</h1></div></div>
+      <p style={{ maxWidth: 720, margin: '0 0 24px', fontSize: 14, color: 'var(--muted-foreground, #6b7280)' }}>
+        Jeder Redaktionsanlass gehört zu einem <strong>Format</strong>. Das Format legt fest, wie viele Tage vor oder nach dem Termin die Hauptankündigung, eine Erinnerung oder ein optionaler Last Call automatisch geplant werden. Formate ohne festen Termin (z. B. „Lied des Monats“) werden frei eingeplant.
+      </p>
+      {Object.entries(grouped).map(([category, list]) => (
+        <div key={category} style={{ marginBottom: 28 }}>
+          <h2 style={{ fontSize: 15, margin: '0 0 10px' }}>{category}</h2>
+          <div style={{ display: 'grid', gap: 10 }}>
+            {list.map((format) => (
+              <div key={format.id} style={{ border: '1px solid var(--border, #e5e7eb)', borderRadius: 10, padding: '12px 16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
+                  <strong>{format.name}</strong>
+                  <Badge variant="outline">{LOGIC_LABELS[format.logicType] ?? format.logicType}</Badge>
+                </div>
+                <p style={{ margin: '0 0 4px', fontSize: 14 }}>{formatTimingSummary(format, postRules)}</p>
+                {FORMAT_NOTES[format.slug] && <p style={{ margin: 0, fontSize: 13, color: 'var(--muted-foreground, #6b7280)' }}>{FORMAT_NOTES[format.slug]}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      <p style={{ fontSize: 13, color: 'var(--muted-foreground, #6b7280)' }}>Hinweis: Die automatische Erzeugung von Aufgaben (z. B. „Material besorgen“) ist technisch vorbereitet, aber noch nicht mit Regeln befüllt – Aufgaben werden aktuell weiterhin manuell angelegt.</p>
+    </section>
   );
 }
 
