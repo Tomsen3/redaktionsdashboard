@@ -6,7 +6,7 @@ import type { Session } from '@supabase/supabase-js';
 import {
   Archive, BarChart3, Bell, CalendarDays, Check, ChevronRight, CircleUserRound,
   ClipboardCheck, Clock3, ExternalLink, FileImage, Filter, Grid2X2, ImageIcon, LayoutList,
-  Link2, PackageCheck, Pencil, Plus, Sparkles, Users, X,
+  Link2, MapPin, PackageCheck, Pencil, Plus, Sparkles, Users, X,
 } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import {
@@ -330,6 +330,8 @@ export function EditorialDashboard() {
     eventStartTime: '09:00',
     eventEnd: '',
     eventEndTime: '17:00',
+    location: '',
+    instructors: '',
     publicationTargetDate: TODAY,
     eventReferenceDate: TODAY,
     materialReadyDate: '',
@@ -377,6 +379,8 @@ export function EditorialDashboard() {
       subtitle: itemDraft.subtitle.trim() || null,
       event_start: format.logicType === 'event' && itemDraft.eventStart ? new Date(`${itemDraft.eventStart}T${itemDraft.eventStartTime || '09:00'}:00`).toISOString() : null,
       event_end: format.logicType === 'event' && itemDraft.eventEnd ? new Date(`${itemDraft.eventEnd}T${itemDraft.eventEndTime || '17:00'}:00`).toISOString() : null,
+      event_location: format.logicType === 'event' ? (itemDraft.location.trim() || null) : null,
+      instructors: format.logicType === 'event' ? (itemDraft.instructors.trim() || null) : null,
       publication_target_date: format.logicType === 'publication' ? itemDraft.publicationTargetDate || null : null,
       event_reference_date: format.logicType === 'event_material' ? itemDraft.eventReferenceDate || null : null,
       material_ready_date: format.logicType === 'event_material' ? itemDraft.materialReadyDate || null : null,
@@ -703,8 +707,8 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
 function EditorialPlan({ items, posts, onOpenItem, onCreateItem }: { items: any[]; posts: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void }) {
   const openRow = (event: any, itemId: string) => { if (event.key && event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault?.(); onOpenItem(itemId); };
   return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Veröffentlichungen</p><h1>Redaktionsplan</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Badge variant="outline">{posts.length} Ergebnisse</Badge><Button size="sm" onClick={onCreateItem}><Plus /> Neuer Redaktionsanlass</Button></div></div>
-    <div className="desktop-table"><table><thead><tr><th>Datum</th><th>Inhalt</th><th>Posting</th><th>Status</th><th>Verantwortung</th><th>Kanäle</th><th><span className="sr-only">Details</span></th></tr></thead><tbody>{[...posts].sort((a,b) => a.plannedDate.localeCompare(b.plannedDate)).map((post) => { const item = itemFor(items, post.editorialItemId); return <tr key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{formatDate(post.plannedDate)}</strong>{post.lateEntry && <small>neu geplant</small>}</td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{post.type}{post.conditional && <small>bedingt</small>}</td><td><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge></td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td><div className="channel-dots" aria-label="Instagram Facebook LinkedIn"><i>IG</i><i>FB</i><i>IN</i></div></td><td><ChevronRight size={17} /></td></tr>; })}</tbody></table></div>
-    <div className="mobile-cards">{posts.map((post) => { const item = itemFor(items, post.editorialItemId); return <article className="plan-card" key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}</span><h3>{item.title}</h3></div><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge><div className="plan-card-row"><strong>{fullDate(post.plannedDate)}</strong><span>{post.type}</span></div><div className="meta"><span><Users /> {item.contentOwner} / {item.publishOwner}</span><span>IG · FB · IN</span></div></article>; })}</div>
+    <div className="desktop-table"><table><thead><tr><th>Datum</th><th>Inhalt</th><th>Posting</th><th>Status</th><th>Verantwortung</th><th>Kanäle</th><th><span className="sr-only">Details</span></th></tr></thead><tbody>{[...posts].sort((a,b) => a.plannedDate.localeCompare(b.plannedDate)).map((post) => { const item = itemFor(items, post.editorialItemId); return <tr key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{formatDate(post.plannedDate)}</strong>{post.lateEntry && <small>neu geplant</small>}</td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}{item.eventStart && ` · Termin: ${formatDate(item.eventStart)}${item.eventEnd && item.eventEnd !== item.eventStart ? `–${formatDate(item.eventEnd)}` : ''}`}</small></td><td>{post.type}{post.conditional && <small>bedingt</small>}</td><td><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge></td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td><div className="channel-dots" aria-label="Instagram Facebook LinkedIn"><i>IG</i><i>FB</i><i>IN</i></div></td><td><ChevronRight size={17} /></td></tr>; })}</tbody></table></div>
+    <div className="mobile-cards">{posts.map((post) => { const item = itemFor(items, post.editorialItemId); return <article className="plan-card" key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{item.eventStart && ` · Termin: ${formatDate(item.eventStart)}`}</span><h3>{item.title}</h3></div><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge><div className="plan-card-row"><strong>{fullDate(post.plannedDate)}</strong><span>{post.type}</span></div><div className="meta"><span><Users /> {item.contentOwner} / {item.publishOwner}</span><span>IG · FB · IN</span></div></article>; })}</div>
   </section>;
 }
 
@@ -737,6 +741,38 @@ function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, 
   const row: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 2fr 1fr auto', gap: 12, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border, #e5e5e5)', textAlign: 'left', width: '100%', background: 'none', border: 'none', borderBottomWidth: 1, borderBottomStyle: 'solid' };
   const sectionHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, margin: '20px 0 8px', fontSize: 14, fontWeight: 600 };
   const empty: CSSProperties = { fontSize: 13, opacity: 0.7, padding: '4px 0' };
+
+  const [editingDetails, setEditingDetails] = useState(false);
+  const [detailDraft, setDetailDraft] = useState<any>(null);
+  const [savingDetails, setSavingDetails] = useState(false);
+
+  useEffect(() => {
+    setEditingDetails(false);
+    setDetailDraft(item ? {
+      eventStart: item.eventStart ?? '',
+      eventStartTime: item.eventStartTime ?? '09:00',
+      eventEnd: item.eventEnd ?? '',
+      eventEndTime: item.eventEndTime ?? '17:00',
+      location: item.location ?? '',
+      instructors: item.instructors ?? '',
+    } : null);
+  }, [item?.id]);
+
+  const saveDetails = async () => {
+    if (!item || !detailDraft) return;
+    setSavingDetails(true);
+    const { error } = await supabase.from('editorial_items').update({
+      event_start: detailDraft.eventStart ? new Date(`${detailDraft.eventStart}T${detailDraft.eventStartTime || '09:00'}:00`).toISOString() : null,
+      event_end: detailDraft.eventEnd ? new Date(`${detailDraft.eventEnd}T${detailDraft.eventEndTime || '17:00'}:00`).toISOString() : null,
+      event_location: detailDraft.location || null,
+      instructors: detailDraft.instructors || null,
+    }).eq('id', item.id);
+    if (error) console.error('Veranstaltungsdetails konnten nicht gespeichert werden', error);
+    setSavingDetails(false);
+    setEditingDetails(false);
+    // Aktualisierter Anlass kommt automatisch über die bestehende Realtime-Subscription rein.
+  };
+
   return (
     <Dialog open={Boolean(item)} onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent className="task-dialog" style={{ maxWidth: 640 }}>
@@ -745,6 +781,31 @@ function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, 
           <DialogDescription>{[item?.format, item?.category].filter(Boolean).join(' · ')}</DialogDescription>
         </DialogHeader>
         <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+          <div style={{ padding: '12px 14px', border: '1px solid var(--border, #e5e5e5)', borderRadius: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h3 style={{ ...sectionHeading, margin: 0 }}><MapPin size={16} /> Veranstaltungsdetails</h3>
+              {!editingDetails && <Button variant="ghost" size="sm" onClick={() => setEditingDetails(true)}><Pencil size={14} /> Bearbeiten</Button>}
+            </div>
+            {!editingDetails ? (
+              <div style={{ display: 'grid', gap: 4, fontSize: 14, marginTop: 8 }}>
+                <span>Termin: {item?.eventStart ? `${fullDate(item.eventStart)}${item.eventStartTime ? `, ${item.eventStartTime} Uhr` : ''}${item?.eventEnd ? ` – ${fullDate(item.eventEnd)}${item.eventEndTime ? `, ${item.eventEndTime} Uhr` : ''}` : ''}` : 'kein Termin hinterlegt'}</span>
+                <span>Ort: {item?.location || '—'}</span>
+                <span>Dozent(en): {item?.instructors || '—'}</span>
+              </div>
+            ) : (
+              <div className="task-form" style={{ marginTop: 10 }}>
+                <label htmlFor="detail-event-start"><span>Beginn</span><div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><Input id="detail-event-start" type="date" value={detailDraft?.eventStart} onChange={(event) => setDetailDraft({ ...detailDraft, eventStart: event.target.value })} /><Input type="time" value={detailDraft?.eventStartTime} onChange={(event) => setDetailDraft({ ...detailDraft, eventStartTime: event.target.value })} /></div></label>
+                <label htmlFor="detail-event-end"><span>Ende (optional)</span><div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><Input id="detail-event-end" type="date" value={detailDraft?.eventEnd} onChange={(event) => setDetailDraft({ ...detailDraft, eventEnd: event.target.value })} /><Input type="time" value={detailDraft?.eventEndTime} onChange={(event) => setDetailDraft({ ...detailDraft, eventEndTime: event.target.value })} /></div></label>
+                <label htmlFor="detail-location"><span>Ort</span><Input id="detail-location" value={detailDraft?.location} onChange={(event) => setDetailDraft({ ...detailDraft, location: event.target.value })} /></label>
+                <label htmlFor="detail-instructors"><span>Dozent(en)</span><Input id="detail-instructors" value={detailDraft?.instructors} onChange={(event) => setDetailDraft({ ...detailDraft, instructors: event.target.value })} placeholder="z. B. Anna Beispiel, Max Mustermann" /></label>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', gridColumn: '1 / -1' }}>
+                  <Button variant="outline" size="sm" onClick={() => setEditingDetails(false)} disabled={savingDetails}>Abbrechen</Button>
+                  <Button size="sm" onClick={saveDetails} disabled={savingDetails}>{savingDetails ? 'Speichert …' : 'Speichern'}</Button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <h3 style={sectionHeading}><CalendarDays size={16} /> Postings</h3>
           {posts.length ? posts.map((post) => (
             <div style={row} key={post.id}>
@@ -844,6 +905,8 @@ function ItemCreateDialog({ open, formats, draft, setDraft, onChooseFormat, onSa
           {logicType === 'event' && <>
             <label htmlFor="item-event-start"><span>Beginn</span><div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><Input id="item-event-start" type="date" value={draft.eventStart} onChange={(event) => setDraft({ ...draft, eventStart: event.target.value })} /><Input id="item-event-start-time" type="time" value={draft.eventStartTime} onChange={(event) => setDraft({ ...draft, eventStartTime: event.target.value })} /></div></label>
             <label htmlFor="item-event-end"><span>Ende (optional)</span><div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><Input id="item-event-end" type="date" value={draft.eventEnd} onChange={(event) => setDraft({ ...draft, eventEnd: event.target.value })} /><Input id="item-event-end-time" type="time" value={draft.eventEndTime} onChange={(event) => setDraft({ ...draft, eventEndTime: event.target.value })} /></div></label>
+            <label htmlFor="item-location"><span>Ort (optional)</span><Input id="item-location" value={draft.location} onChange={(event) => setDraft({ ...draft, location: event.target.value })} /></label>
+            <label htmlFor="item-instructors"><span>Dozent(en) (optional)</span><Input id="item-instructors" value={draft.instructors} onChange={(event) => setDraft({ ...draft, instructors: event.target.value })} placeholder="z. B. Anna Beispiel, Max Mustermann" /></label>
           </>}
           {logicType === 'publication' && <label htmlFor="item-publication-date"><span>Ziel-Veröffentlichungsdatum</span><Input id="item-publication-date" type="date" value={draft.publicationTargetDate} onChange={(event) => setDraft({ ...draft, publicationTargetDate: event.target.value })} /></label>}
           {logicType === 'event_material' && <>

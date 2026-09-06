@@ -7,6 +7,7 @@
 
 export function mapItem(row: any) {
   const format = row.editorial_formats;
+  const localTime = (value?: string) => value ? new Date(value).toLocaleTimeString('de-DE', { timeZone: 'Europe/Berlin', hour: '2-digit', minute: '2-digit' }) : undefined;
   return {
     id: row.id,
     formatId: row.format_id,
@@ -17,8 +18,11 @@ export function mapItem(row: any) {
     subtitle: row.subtitle ?? undefined,
     status: row.status,
     eventStart: row.event_start ? row.event_start.slice(0, 10) : undefined,
+    eventStartTime: localTime(row.event_start),
     eventEnd: row.event_end ? row.event_end.slice(0, 10) : undefined,
+    eventEndTime: localTime(row.event_end),
     location: row.event_location ?? undefined,
+    instructors: row.instructors ?? undefined,
     publicationTargetDate: row.publication_target_date ?? undefined,
     eventReferenceDate: row.event_reference_date ?? undefined,
     materialReadyDate: row.material_ready_date ?? undefined,
