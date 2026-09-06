@@ -639,3 +639,14 @@ td small { font-size: .76rem; }
   .topbar-user b { width: 32px; height: 32px; }
   .metrics-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
 }
+
+/* Bugfix: .topbar-motto wird an mehreren Stellen oben in dieser Datei mit
+   white-space: nowrap definiert. Zwischen den vorhandenen Breakpoints (bei
+   ungefähr halber Bildschirmbreite) ist die verfügbare Spaltenbreite dann
+   schon kleiner als der Text, aber die Regel, die das Element bei sehr
+   schmalem Fenster ganz ausblendet, greift noch nicht - der Text läuft
+   sichtbar über. Diese Regel steht bewusst ganz am Ende der Datei, damit sie
+   unabhängig davon greift, welche der mehrfachen .topbar-motto-Definitionen
+   weiter oben aktuell "gewinnt", und schneidet den Text in diesem schmalen
+   Zwischenbereich sauber mit "..." ab, statt ihn überlaufen zu lassen. */
+.topbar-motto { overflow: hidden; text-overflow: ellipsis; max-width: 100%; }

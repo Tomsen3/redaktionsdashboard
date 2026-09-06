@@ -75,12 +75,12 @@ function FilterBar({ filters, onChange }: { filters: Filters; onChange: (filters
   );
 }
 
-function Metric({ label, value, detail, tone = 'neutral', icon: Icon, action }: { label: string; value: string; detail: string; tone?: string; icon: typeof CalendarDays; action: string }) {
+function Metric({ label, value, detail, tone = 'neutral', icon: Icon, action, onClick }: { label: string; value: string; detail: string; tone?: string; icon: typeof CalendarDays; action: string; onClick?: () => void }) {
   return <article className={cn('metric', `metric-${tone}`)}>
     <Icon className="metric-icon" />
     <div className="metric-value"><strong>{value}</strong><span>{label}</span></div>
     <small>{detail}</small>
-    <button type="button">{action} <ChevronRight /></button>
+    <button type="button" onClick={onClick}>{action} <ChevronRight /></button>
   </article>;
 }
 
@@ -372,9 +372,9 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve }: any)
   return <>
     <div className="overview-top">
       <section className="metrics-grid">
-        <Metric label="Geplante Posts diese Woche" value={String(conflict?.count || 0)} detail="" tone="green" icon={CalendarDays} action="Zum Kalender" />
-        <Metric label="Offene Aufgaben" value={String(open.length)} detail="" tone="orange" icon={ClipboardCheck} action="Zu den Aufgaben" />
-        <Metric label={'Material\u00adprobleme'} value={String(blocked.length)} detail="" tone="danger" icon={ImageIcon} action="Details ansehen" />
+        <Metric label="Geplante Posts diese Woche" value={String(conflict?.count || 0)} detail="" tone="green" icon={CalendarDays} action="Zum Kalender" onClick={() => onNavigate('Kalender')} />
+        <Metric label="Offene Aufgaben" value={String(open.length)} detail="" tone="orange" icon={ClipboardCheck} action="Zu den Aufgaben" onClick={() => onNavigate('Aufgaben')} />
+        <Metric label={'Material\u00adprobleme'} value={String(blocked.length)} detail="" tone="danger" icon={ImageIcon} action="Details ansehen" onClick={() => onNavigate('Materialien')} />
       </section>
       <aside className="overview-actions">
         <button type="button" className="primary-create" onClick={() => onNavigate('Redaktionsplan')}><Plus /> Neuer Redaktionsanlass</button>
