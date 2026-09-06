@@ -6,7 +6,7 @@ import type { Session } from '@supabase/supabase-js';
 import {
   Archive, BarChart3, Bell, CalendarDays, Check, ChevronRight, CircleUserRound,
   ClipboardCheck, Clock3, ExternalLink, FileImage, Filter, Grid2X2, ImageIcon, LayoutList,
-  Link2, MoreVertical, PackageCheck, Pencil, Plus, Sparkles, Users, X,
+  Link2, PackageCheck, Pencil, Plus, Sparkles, Users, X,
 } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import {
@@ -209,6 +209,22 @@ export function EditorialDashboard() {
     });
   }, []);
 
+  const [editingTask, setEditingTask] = useState<any>(null);
+  const [taskDraft, setTaskDraft] = useState({ title: '', owner: 'Tom', dueDate: '', status: 'offen' });
+
+  const startEditingTask = useCallback((task: any) => {
+    setEditingTask(task);
+    setTaskDraft({ title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status });
+  }, []);
+
+  const saveTaskEdit = useCallback(() => {
+    if (!editingTask || !taskDraft.title.trim() || !taskDraft.dueDate) return;
+    updateTask(editingTask.id, { ...taskDraft, title: taskDraft.title.trim() });
+    setEditingTask(null);
+  }, [editingTask, taskDraft, updateTask]);
+
+  const cancelTaskEdit = useCallback(() => setEditingTask(null), []);
+
   const reassignTaskTo = useCallback((id: string, owner: string) => {
     setTasks((current) => validateReassign(current, id, owner));
     supabase.from('tasks').update({ owner_name: owner }).eq('id', id).then(({ error }) => {
@@ -342,12 +358,14 @@ export function EditorialDashboard() {
         <div className="workspace">
           {view !== 'Übersicht' && <FilterBar filters={filters} onChange={setFilters} />}
 
-          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} />}
+          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} />}
           {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} />}
-          {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onUpdate={updateTask} />}
+          {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} />}
           {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} />}
         </div>
+
+        <TaskEditDialog items={items} editing={editingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} />
 
         <nav className="mobile-nav" aria-label="Mobile Hauptnavigation">{nav.map(({ name, label, icon: Icon }) => (
           <button key={name} className={view === name ? 'active' : ''} onClick={() => setView(name)}><Icon /><span>{name === 'Redaktionsplan' ? 'Anlässe' : label}</span></button>
@@ -357,7 +375,7 @@ export function EditorialDashboard() {
   );
 }
 
-function Overview({ items, posts, tasks, conflict, onNavigate, onResolve }: any) {
+function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEditTask }: any) {
   const [taskPeople, setTaskPeople] = useState<string[]>(['Tom']);
   const [taskTimes, setTaskTimes] = useState<string[]>(['Überfällig']);
   const open = tasks.filter((task: any) => task.status !== 'erledigt');
@@ -393,7 +411,7 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve }: any)
             <strong>{item.title}</strong>
             <span className="soft-category">{item.category?.split('/')[0]}</span>
             <Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge>
-            <span>{item.publishOwner}</span><MoreVertical />
+            <span>{item.publishOwner}</span>
           </div>; })}
           {!nextPosts.length && <div className="overview-task-empty">Noch keine Postings geplant.</div>}
         </div>
@@ -416,7 +434,7 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve }: any)
         {['Überfällig','Diese Woche'].map((time) => <button type="button" key={time} className={taskTimes.includes(time) ? 'active' : ''} onClick={() => toggle(time, taskTimes, setTaskTimes)}>{time}{taskTimes.includes(time) && ' ×'}</button>)}
       </div>
       <div className="overview-task-table"><div className="overview-task-head"><span>Aufgabe</span><span>Zugehöriger Post</span><span>Fällig bis</span><span>Posting am</span><span>Verantwortlich</span><span>Status</span></div>
-        {overviewTasks.map((task: any) => { const item = itemFor(items, task.editorialItemId); const post = posts.find((entry: any) => entry.id === task.postId); const overdue = task.dueDate < TODAY; return <div className="overview-task-row" key={task.id}><strong>{task.title}</strong><span>{item.title}</span><span className={overdue ? 'overdue-date' : ''}>{formatDate(task.dueDate)}</span><span>{post ? formatDate(post.plannedDate) : '—'}</span><span>{task.owner}</span><Badge className={cn('status-badge', overdue || task.blocked ? 'status-problem' : `status-${task.status}`)} variant={overdue || task.blocked ? 'destructive' : 'secondary'}>{task.blocked ? 'blockiert' : overdue ? 'Überfällig' : statusLabel(task.status)}</Badge></div>; })}
+        {overviewTasks.map((task: any) => { const item = itemFor(items, task.editorialItemId); const post = posts.find((entry: any) => entry.id === task.postId); const overdue = task.dueDate < TODAY; return <div className="overview-task-row" key={task.id} role="button" tabIndex={0} onClick={() => onEditTask(task)} onKeyDown={(event: any) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onEditTask(task); } }} aria-label={`${task.title} bearbeiten`}><strong>{task.title}</strong><span>{item.title}</span><span className={overdue ? 'overdue-date' : ''}>{formatDate(task.dueDate)}</span><span>{post ? formatDate(post.plannedDate) : '—'}</span><span>{task.owner}</span><Badge className={cn('status-badge', overdue || task.blocked ? 'status-problem' : `status-${task.status}`)} variant={overdue || task.blocked ? 'destructive' : 'secondary'}>{task.blocked ? 'blockiert' : overdue ? 'Überfällig' : statusLabel(task.status)}</Badge></div>; })}
         {!overviewTasks.length && <div className="overview-task-empty">Für diese Filterkombination gibt es aktuell keine Aufgabe.</div>}
       </div>
     </section>
@@ -452,23 +470,12 @@ function CalendarView({ items, posts }: { items: any[]; posts: any[] }) {
   </section>;
 }
 
-function TasksView({ items, tasks, onComplete, onUpdate }: { items: any[]; tasks: any[]; onComplete: (id: string) => void; onUpdate: (id: string, changes: Record<string, string>) => void }) {
-  const [editing, setEditing] = useState<any>(null);
-  const [draft, setDraft] = useState({ title: '', owner: 'Tom', dueDate: '', status: 'offen' });
-  const startEditing = (task: any) => {
-    setEditing(task);
-    setDraft({ title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status });
-  };
-  const save = () => {
-    if (!editing || !draft.title.trim() || !draft.dueDate) return;
-    onUpdate(editing.id, { ...draft, title: draft.title.trim() });
-    setEditing(null);
-  };
-
-  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Nach Fälligkeit sortiert</p><h1>Aufgaben</h1></div><Badge variant="outline">{tasks.filter((task) => task.status !== 'erledigt').length} offen</Badge></div>
-    <div className="task-list">{tasks.map((task) => { const item = itemFor(items, task.editorialItemId); return <article key={task.id} className={cn('task-row', task.status === 'erledigt' && 'done', task.blocked && 'blocked-row')}><button className="task-check" onClick={() => onComplete(task.id)} aria-label={`${task.title} als erledigt markieren`}>{task.status === 'erledigt' && <Check />}</button><div className="task-date"><strong>{formatDate(task.dueDate)}</strong><small>{timeBucket(task.dueDate)}</small></div><div className="task-main"><span className="category-line">{item.format}</span><strong>{task.title}</strong><small>{item.title}</small></div><div className="task-owner"><CircleUserRound /><span>{task.owner}</span></div><div className="task-actions">{task.blocked ? <Badge className="status-badge status-problem" variant="destructive">blockiert</Badge> : <Badge className={cn('status-badge', `status-${task.status}`)} variant="secondary">{statusLabel(task.status)}</Badge>}<Button variant="ghost" size="icon-sm" onClick={() => startEditing(task)} aria-label={`${task.title} bearbeiten`}><Pencil /></Button></div></article>; })}{!tasks.length && <div className="empty-state"><PackageCheck /><h3>Keine Treffer</h3><p>Mit dieser Filterkombination sind keine Aufgaben offen.</p></div>}</div>
-
-    <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+// Gemeinsamer Bearbeiten-Dialog für Aufgaben, wird sowohl von der Startseite
+// (Übersicht) als auch von der vollen Aufgaben-Ansicht (TasksView) genutzt.
+// Zustand (editing/draft) liegt dafür zentral in EditorialDashboard.
+function TaskEditDialog({ items, editing, draft, setDraft, onSave, onCancel }: { items: any[]; editing: any; draft: { title: string; owner: string; dueDate: string; status: string }; setDraft: (draft: { title: string; owner: string; dueDate: string; status: string }) => void; onSave: () => void; onCancel: () => void }) {
+  return (
+    <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) onCancel(); }}>
       <DialogContent className="task-dialog">
         <DialogHeader><DialogTitle>Aufgabe bearbeiten</DialogTitle><DialogDescription>{editing ? itemFor(items, editing.editorialItemId).title : ''}</DialogDescription></DialogHeader>
         <div className="task-form">
@@ -477,16 +484,22 @@ function TasksView({ items, tasks, onComplete, onUpdate }: { items: any[]; tasks
           <label htmlFor="task-due-date"><span>Fällig am</span><Input id="task-due-date" type="date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} /></label>
           <label htmlFor="task-status"><span>Status</span><Select value={draft.status} onValueChange={(status) => setDraft({ ...draft, status: status as string })}><SelectTrigger id="task-status" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="offen">offen</SelectItem><SelectItem value="in_arbeit">in Arbeit</SelectItem><SelectItem value="erledigt">erledigt</SelectItem><SelectItem value="gestrichen">gestrichen</SelectItem></SelectContent></Select></label>
         </div>
-        <DialogFooter><Button variant="outline" onClick={() => setEditing(null)}>Abbrechen</Button><Button onClick={save} disabled={!draft.title.trim() || !draft.dueDate}>Änderungen speichern</Button></DialogFooter>
+        <DialogFooter><Button variant="outline" onClick={onCancel}>Abbrechen</Button><Button onClick={onSave} disabled={!draft.title.trim() || !draft.dueDate}>Änderungen speichern</Button></DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function TasksView({ items, tasks, onComplete, onEdit }: { items: any[]; tasks: any[]; onComplete: (id: string) => void; onEdit: (task: any) => void }) {
+  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Nach Fälligkeit sortiert</p><h1>Aufgaben</h1></div><Badge variant="outline">{tasks.filter((task) => task.status !== 'erledigt').length} offen</Badge></div>
+    <div className="task-list">{tasks.map((task) => { const item = itemFor(items, task.editorialItemId); return <article key={task.id} className={cn('task-row', task.status === 'erledigt' && 'done', task.blocked && 'blocked-row')}><button className="task-check" onClick={() => onComplete(task.id)} aria-label={`${task.title} als erledigt markieren`}>{task.status === 'erledigt' && <Check />}</button><div className="task-date"><strong>{formatDate(task.dueDate)}</strong><small>{timeBucket(task.dueDate)}</small></div><div className="task-main"><span className="category-line">{item.format}</span><strong>{task.title}</strong><small>{item.title}</small></div><div className="task-owner"><CircleUserRound /><span>{task.owner}</span></div><div className="task-actions">{task.blocked ? <Badge className="status-badge status-problem" variant="destructive">blockiert</Badge> : <Badge className={cn('status-badge', `status-${task.status}`)} variant="secondary">{statusLabel(task.status)}</Badge>}<Button variant="ghost" size="icon-sm" onClick={() => onEdit(task)} aria-label={`${task.title} bearbeiten`}><Pencil /></Button></div></article>; })}{!tasks.length && <div className="empty-state"><PackageCheck /><h3>Keine Treffer</h3><p>Mit dieser Filterkombination sind keine Aufgaben offen.</p></div>}</div>
   </section>;
 }
 
 function MaterialsView({ items, materials: visible }: { items: any[]; materials: any[] }) {
   const present = visible.filter((material) => material.status === 'vorhanden').length;
   return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Pflichtmaterial und Quellen</p><h1>Materialien</h1></div><div className="material-progress"><Progress value={visible.length ? present / visible.length * 100 : 0}><ProgressLabel>Verfügbar</ProgressLabel><span className="progress-count">{present}/{visible.length}</span></Progress></div></div>
-    <div className="material-grid">{visible.map((material) => { const item = itemFor(items, material.editorialItemId); return <article className="material-card" key={material.id}><div className={cn('material-icon', material.status)}>{material.type === 'Bild' ? <FileImage /> : material.type === 'Audio' ? <Clock3 /> : <PackageCheck />}</div><div className="material-copy"><span className="category-line">{item.title}</span><strong>{material.title}</strong><small>{material.type} · Quelle: {material.source}</small></div><div className="material-state"><Badge className={cn('status-badge', `status-${material.status}`)} variant={material.status === 'vorhanden' ? 'secondary' : material.status === 'fehlt' ? 'destructive' : 'outline'}>{material.status}</Badge>{material.dueDate && <small>bis {formatDate(material.dueDate)}</small>}</div></article>; })}
+    <div className="material-grid">{visible.map((material) => { const item = itemFor(items, material.editorialItemId); return <article className="material-card" key={material.id}><div className={cn('material-icon', material.status)}>{material.type === 'Bild' ? <FileImage /> : material.type === 'Audio' ? <Clock3 /> : <PackageCheck />}</div><div className="material-copy"><span className="category-line">{item.title}</span><strong>{material.title}</strong><small>{material.type} · Quelle: {(material.url || material.fileReference) ? <a href={material.url || material.fileReference} target="_blank" rel="noreferrer">{material.source || 'Link öffnen'} <Link2 size={12} /></a> : (material.source || '—')}</small></div><div className="material-state"><Badge className={cn('status-badge', `status-${material.status}`)} variant={material.status === 'vorhanden' ? 'secondary' : material.status === 'fehlt' ? 'destructive' : 'outline'}>{material.status}</Badge>{material.dueDate && <small>bis {formatDate(material.dueDate)}</small>}</div></article>; })}
     {!visible.length && <div className="empty-state"><PackageCheck /><h3>Keine Materialien</h3><p>Für diese Filterkombination liegen keine Materialien vor.</p></div>}</div>
   </section>;
 }

@@ -76,6 +76,8 @@ export function mapMaterial(row: any) {
     status: row.status,
     dueDate: row.due_date ?? undefined,
     source: row.source_name ?? row.source_type ?? '',
+    url: row.url ?? undefined,
+    fileReference: row.file_reference ?? undefined,
   };
 }
 
