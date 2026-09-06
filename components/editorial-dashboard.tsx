@@ -25,7 +25,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import { addDays, mondayOfWeek, postingDensity, reassignTask as validateReassign } from '@/lib/editorial-engine.mjs';
+import { addDays, mondayOfWeek, movePost, postingDensity, reassignTask as validateReassign } from '@/lib/editorial-engine.mjs';
 import { supabase } from '@/lib/supabase-client';
 import { mapItem, mapMaterial, mapPost, mapTask } from '@/lib/data-mappers';
 
@@ -225,6 +225,41 @@ export function EditorialDashboard() {
 
   const cancelTaskEdit = useCallback(() => setEditingTask(null), []);
 
+  const [movingPost, setMovingPost] = useState<any>(null);
+  const [moveDate, setMoveDate] = useState('');
+
+  const startMovingPost = useCallback((post: any) => {
+    setMovingPost(post);
+    setMoveDate(post.plannedDate);
+  }, []);
+
+  const cancelMovePost = useCallback(() => setMovingPost(null), []);
+
+  const [openItemId, setOpenItemId] = useState<string | null>(null);
+  const openItem = items.find((item) => item.id === openItemId) ?? null;
+  const detailPosts = posts.filter((post) => post.editorialItemId === openItemId).sort((a, b) => a.plannedDate.localeCompare(b.plannedDate));
+  const detailTasks = tasks.filter((task) => task.editorialItemId === openItemId).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const detailMaterials = materials.filter((material) => material.editorialItemId === openItemId);
+
+  const saveMovePost = useCallback(() => {
+    if (!movingPost || !moveDate) return;
+    const { posts: updatedPosts, tasks: updatedTasks } = movePost(posts, tasks, movingPost.id, moveDate);
+    setPosts(updatedPosts);
+    setTasks(updatedTasks);
+    supabase.from('posts').update({ planned_date: moveDate, manually_adjusted: true }).eq('id', movingPost.id).then(({ error }) => {
+      if (error) console.error('Termin konnte nicht verschoben werden', error);
+    });
+    // Nur die Aufgaben in Supabase nachziehen, deren Fälligkeit von diesem Post abhängt.
+    updatedTasks
+      .filter((task: any) => task.postId === movingPost.id && task.relativeOffsetDays != null)
+      .forEach((task: any) => {
+        supabase.from('tasks').update({ due_date: task.dueDate }).eq('id', task.id).then(({ error }) => {
+          if (error) console.error('Aufgabenfrist konnte nicht aktualisiert werden', error);
+        });
+      });
+    setMovingPost(null);
+  }, [movingPost, moveDate, posts, tasks]);
+
   const reassignTaskTo = useCallback((id: string, owner: string) => {
     setTasks((current) => validateReassign(current, id, owner));
     supabase.from('tasks').update({ owner_name: owner }).eq('id', id).then(({ error }) => {
@@ -359,13 +394,15 @@ export function EditorialDashboard() {
           {view !== 'Übersicht' && <FilterBar filters={filters} onChange={setFilters} />}
 
           {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} />}
-          {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} />}
-          {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} />}
+          {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} />}
+          {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
           {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} />}
           {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} />}
         </div>
 
         <TaskEditDialog items={items} editing={editingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} />
+        <PostMoveDialog items={items} moving={movingPost} date={moveDate} setDate={setMoveDate} onSave={saveMovePost} onCancel={cancelMovePost} />
+        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} />
 
         <nav className="mobile-nav" aria-label="Mobile Hauptnavigation">{nav.map(({ name, label, icon: Icon }) => (
           <button key={name} className={view === name ? 'active' : ''} onClick={() => setView(name)}><Icon /><span>{name === 'Redaktionsplan' ? 'Anlässe' : label}</span></button>
@@ -447,14 +484,15 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
   </>;
 }
 
-function EditorialPlan({ items, posts }: { items: any[]; posts: any[] }) {
+function EditorialPlan({ items, posts, onOpenItem }: { items: any[]; posts: any[]; onOpenItem: (itemId: string) => void }) {
+  const openRow = (event: any, itemId: string) => { if (event.key && event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault?.(); onOpenItem(itemId); };
   return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Veröffentlichungen</p><h1>Redaktionsplan</h1></div><Badge variant="outline">{posts.length} Ergebnisse</Badge></div>
-    <div className="desktop-table"><table><thead><tr><th>Datum</th><th>Inhalt</th><th>Posting</th><th>Status</th><th>Verantwortung</th><th>Kanäle</th><th><span className="sr-only">Details</span></th></tr></thead><tbody>{[...posts].sort((a,b) => a.plannedDate.localeCompare(b.plannedDate)).map((post) => { const item = itemFor(items, post.editorialItemId); return <tr key={post.id}><td><strong>{formatDate(post.plannedDate)}</strong>{post.lateEntry && <small>neu geplant</small>}</td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{post.type}{post.conditional && <small>bedingt</small>}</td><td><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge></td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td><div className="channel-dots" aria-label="Instagram Facebook LinkedIn"><i>IG</i><i>FB</i><i>IN</i></div></td><td><ChevronRight size={17} /></td></tr>; })}</tbody></table></div>
-    <div className="mobile-cards">{posts.map((post) => { const item = itemFor(items, post.editorialItemId); return <article className="plan-card" key={post.id}><div><span className="category-line">{item.format}</span><h3>{item.title}</h3></div><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge><div className="plan-card-row"><strong>{fullDate(post.plannedDate)}</strong><span>{post.type}</span></div><div className="meta"><span><Users /> {item.contentOwner} / {item.publishOwner}</span><span>IG · FB · IN</span></div></article>; })}</div>
+    <div className="desktop-table"><table><thead><tr><th>Datum</th><th>Inhalt</th><th>Posting</th><th>Status</th><th>Verantwortung</th><th>Kanäle</th><th><span className="sr-only">Details</span></th></tr></thead><tbody>{[...posts].sort((a,b) => a.plannedDate.localeCompare(b.plannedDate)).map((post) => { const item = itemFor(items, post.editorialItemId); return <tr key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{formatDate(post.plannedDate)}</strong>{post.lateEntry && <small>neu geplant</small>}</td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{post.type}{post.conditional && <small>bedingt</small>}</td><td><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge></td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td><div className="channel-dots" aria-label="Instagram Facebook LinkedIn"><i>IG</i><i>FB</i><i>IN</i></div></td><td><ChevronRight size={17} /></td></tr>; })}</tbody></table></div>
+    <div className="mobile-cards">{posts.map((post) => { const item = itemFor(items, post.editorialItemId); return <article className="plan-card" key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}</span><h3>{item.title}</h3></div><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge><div className="plan-card-row"><strong>{fullDate(post.plannedDate)}</strong><span>{post.type}</span></div><div className="meta"><span><Users /> {item.contentOwner} / {item.publishOwner}</span><span>IG · FB · IN</span></div></article>; })}</div>
   </section>;
 }
 
-function CalendarView({ items, posts }: { items: any[]; posts: any[] }) {
+function CalendarView({ items, posts, onMovePost }: { items: any[]; posts: any[]; onMovePost: (post: any) => void }) {
   const [cursor] = useState(() => { const d = new Date(`${TODAY}T12:00:00`); d.setDate(1); return d; });
   const monthLabel = new Intl.DateTimeFormat('de-DE', { month: 'long', year: 'numeric' }).format(cursor);
   const firstWeekday = (cursor.getDay() + 6) % 7; // Montag = 0
@@ -466,13 +504,83 @@ function CalendarView({ items, posts }: { items: any[]; posts: any[] }) {
   const iso = (day: number) => `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   return <section className="panel wide-panel calendar-panel"><div className="panel-heading"><div><p className="eyebrow">Monatsansicht</p><h1 style={{ textTransform: 'capitalize' }}>{monthLabel}</h1></div><div className="density-key"><span className="ok" />2–3 ideal <span className="danger" />mehr als 3</div></div>
     <div className="weekday-row">{['Mo','Di','Mi','Do','Fr','Sa','So'].map((day) => <span key={day}>{day}</span>)}</div>
-    <div className="calendar-grid">{cells.map((day, index) => { const date = day > 0 ? iso(day) : ''; const dayPosts = posts.filter((post) => post.plannedDate === date); return <div key={index} className={cn('calendar-day', !date && 'muted-day', date === TODAY && 'today')}><span>{day > 0 ? day : ''}</span>{dayPosts.map((post) => <button key={post.id} aria-label={`${itemFor(items, post.editorialItemId).title}: ${post.type}`} className={cn('calendar-event', post.status === 'blockiert' && 'blocked')}><strong>{itemFor(items, post.editorialItemId).title}</strong><small>{post.type}</small></button>)}</div>; })}</div>
+    <div className="calendar-grid">{cells.map((day, index) => { const date = day > 0 ? iso(day) : ''; const dayPosts = posts.filter((post) => post.plannedDate === date); return <div key={index} className={cn('calendar-day', !date && 'muted-day', date === TODAY && 'today')}><span>{day > 0 ? day : ''}</span>{dayPosts.map((post) => <button key={post.id} type="button" onClick={() => onMovePost(post)} aria-label={`${itemFor(items, post.editorialItemId).title}: ${post.type}, Termin verschieben`} className={cn('calendar-event', post.status === 'blockiert' && 'blocked')}><strong>{itemFor(items, post.editorialItemId).title}</strong><small>{post.type}</small></button>)}</div>; })}</div>
   </section>;
 }
 
 // Gemeinsamer Bearbeiten-Dialog für Aufgaben, wird sowohl von der Startseite
 // (Übersicht) als auch von der vollen Aufgaben-Ansicht (TasksView) genutzt.
 // Zustand (editing/draft) liegt dafür zentral in EditorialDashboard.
+// Redaktionsanlass-Detailansicht: zeigt zu einem Anlass alle Postings, Aufgaben
+// (mit Status + Bearbeiter) und Materialien gemeinsam. Klick auf eine Aufgabe
+// bzw. "Verschieben" bei einem Posting öffnet die bereits vorhandenen Dialoge
+// (TaskEditDialog / PostMoveDialog) obendrüber, statt eigene Bearbeitungslogik
+// zu duplizieren. Da diese Ansicht neu ist, gibt es dafür noch keine eigenen
+// CSS-Klassen im Stylesheet — Layout daher wie bei AuthGate per Inline-Style.
+function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, onMovePost }: { item: any; posts: any[]; tasks: any[]; materials: any[]; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void }) {
+  const row: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 2fr 1fr auto', gap: 12, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border, #e5e5e5)', textAlign: 'left', width: '100%', background: 'none', border: 'none', borderBottomWidth: 1, borderBottomStyle: 'solid' };
+  const sectionHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, margin: '20px 0 8px', fontSize: 14, fontWeight: 600 };
+  const empty: CSSProperties = { fontSize: 13, opacity: 0.7, padding: '4px 0' };
+  return (
+    <Dialog open={Boolean(item)} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="task-dialog" style={{ maxWidth: 640 }}>
+        <DialogHeader>
+          <DialogTitle>{item?.title}</DialogTitle>
+          <DialogDescription>{[item?.format, item?.category].filter(Boolean).join(' · ')}</DialogDescription>
+        </DialogHeader>
+        <div style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+          <h3 style={sectionHeading}><CalendarDays size={16} /> Postings</h3>
+          {posts.length ? posts.map((post) => (
+            <div style={row} key={post.id}>
+              <span>{formatDate(post.plannedDate)}</span>
+              <span>{post.type}{post.conditional && <small> · bedingt</small>}</span>
+              <Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge>
+              <Button variant="ghost" size="sm" onClick={() => onMovePost(post)}>Verschieben</Button>
+            </div>
+          )) : <p style={empty}>Keine Postings vorhanden.</p>}
+
+          <h3 style={sectionHeading}><ClipboardCheck size={16} /> Aufgaben</h3>
+          {tasks.length ? tasks.map((task) => (
+            <button type="button" style={row} key={task.id} onClick={() => onEditTask(task)} aria-label={`${task.title} bearbeiten`}>
+              <span>{formatDate(task.dueDate)}</span>
+              <span>{task.title}</span>
+              <span>{task.owner}</span>
+              <Badge className={cn('status-badge', task.blocked ? 'status-problem' : `status-${task.status}`)} variant={task.blocked ? 'destructive' : 'secondary'}>{task.blocked ? 'blockiert' : statusLabel(task.status)}</Badge>
+            </button>
+          )) : <p style={empty}>Keine Aufgaben vorhanden.</p>}
+
+          <h3 style={sectionHeading}><FileImage size={16} /> Materialien</h3>
+          {materials.length ? materials.map((material) => (
+            <div style={row} key={material.id}>
+              <span>{material.title}</span>
+              <span>{(material.url || material.fileReference) ? <a href={material.url || material.fileReference} target="_blank" rel="noreferrer">{material.source || 'Link öffnen'} <Link2 size={12} /></a> : (material.source || '—')}</span>
+              <Badge className={cn('status-badge', `status-${material.status}`)} variant={material.status === 'vorhanden' ? 'secondary' : material.status === 'fehlt' ? 'destructive' : 'outline'}>{material.status}</Badge>
+              <span />
+            </div>
+          )) : <p style={empty}>Keine Materialien vorhanden.</p>}
+        </div>
+        <DialogFooter><Button variant="outline" onClick={onClose}>Schließen</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Dialog zum Verschieben eines Kalendertermins (Post). Nutzt dieselben
+// task-dialog/task-form-Klassen wie TaskEditDialog, damit sich am Design nichts ändert.
+function PostMoveDialog({ items, moving, date, setDate, onSave, onCancel }: { items: any[]; moving: any; date: string; setDate: (date: string) => void; onSave: () => void; onCancel: () => void }) {
+  return (
+    <Dialog open={Boolean(moving)} onOpenChange={(open) => { if (!open) onCancel(); }}>
+      <DialogContent className="task-dialog">
+        <DialogHeader><DialogTitle>Termin verschieben</DialogTitle><DialogDescription>{moving ? `${itemFor(items, moving.editorialItemId).title} – ${moving.type}` : ''}</DialogDescription></DialogHeader>
+        <div className="task-form">
+          <label htmlFor="post-move-date"><span>Neues Datum</span><Input id="post-move-date" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+        </div>
+        <DialogFooter><Button variant="outline" onClick={onCancel}>Abbrechen</Button><Button onClick={onSave} disabled={!date}>Verschieben</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function TaskEditDialog({ items, editing, draft, setDraft, onSave, onCancel }: { items: any[]; editing: any; draft: { title: string; owner: string; dueDate: string; status: string }; setDraft: (draft: { title: string; owner: string; dueDate: string; status: string }) => void; onSave: () => void; onCancel: () => void }) {
   return (
     <Dialog open={Boolean(editing)} onOpenChange={(open) => { if (!open) onCancel(); }}>
