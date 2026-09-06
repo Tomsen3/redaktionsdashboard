@@ -83,6 +83,50 @@ export function mapMaterial(row: any) {
   };
 }
 
+export function mapFormat(row: any) {
+  return {
+    id: row.id,
+    slug: row.slug,
+    name: row.name,
+    category: row.category,
+    logicType: row.logic_type,
+    repeatable: row.repeatable,
+    defaultContentOwner: row.default_content_owner,
+    defaultGraphicsOwner: row.default_graphics_owner,
+    defaultApprovalOwner: row.default_approval_owner,
+    defaultPublishOwner: row.default_publish_owner,
+    active: row.active,
+  };
+}
+
+export function mapPostRule(row: any) {
+  return {
+    id: row.id,
+    formatId: row.format_id,
+    postType: row.post_type,
+    offsetDays: row.offset_days,
+    conditional: row.conditional,
+    decisionOffsetDays: row.decision_offset_days ?? undefined,
+    minGapDays: row.min_gap_days,
+    priority: row.priority,
+    active: row.active,
+  };
+}
+
+export function mapTaskRule(row: any) {
+  return {
+    id: row.id,
+    formatId: row.format_id ?? undefined,
+    postType: row.post_type,
+    taskType: row.task_type,
+    title: row.title,
+    offsetDays: row.offset_days,
+    ownerRole: row.owner_role,
+    reducedOnRepeat: row.reduced_on_repeat,
+    active: row.active,
+  };
+}
+
 export function mapQuickLink(row: any) {
   return {
     id: row.id,

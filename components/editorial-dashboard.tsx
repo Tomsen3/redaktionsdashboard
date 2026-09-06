@@ -26,9 +26,9 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import { addDays, mondayOfWeek, movePost, postingDensity, reassignTask as validateReassign } from '@/lib/editorial-engine.mjs';
+import { addDays, generateSchedule, mondayOfWeek, movePost, postingDensity, reassignTask as validateReassign } from '@/lib/editorial-engine.mjs';
 import { supabase } from '@/lib/supabase-client';
-import { mapItem, mapMaterial, mapPost, mapQuickLink, mapTask } from '@/lib/data-mappers';
+import { mapFormat, mapItem, mapMaterial, mapPost, mapPostRule, mapQuickLink, mapTask, mapTaskRule } from '@/lib/data-mappers';
 
 type View = 'Übersicht' | 'Redaktionsplan' | 'Kalender' | 'Aufgaben' | 'Materialien';
 type Filters = { person: string; time: string; status: string; format: string };
@@ -51,12 +51,12 @@ const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TO
 // Ordnet UI-Feldnamen den Supabase-Spalten zu, damit updateTask generisch bleibt.
 const TASK_COLUMN: Record<string, string> = { title: 'title', owner: 'owner_name', dueDate: 'due_date', status: 'status', priority: 'priority', notes: 'notes' };
 
-function FilterBar({ filters, onChange }: { filters: Filters; onChange: (filters: Filters) => void }) {
+function FilterBar({ filters, onChange, formatNames }: { filters: Filters; onChange: (filters: Filters) => void; formatNames: string[] }) {
   const choices = {
     person: ['Alle', 'Tom', 'Norbert'],
     time: ['Alle', 'Überfällig', 'Heute', 'Diese Woche', 'Später'],
     status: ['Alle', 'offen', 'in_arbeit', 'geplant', 'blockiert', 'erledigt'],
-    format: ['Alle', 'Weiterbildungsmodul', 'Schnupperkurs', 'Lied des Monats', 'Zertifizierung'],
+    format: ['Alle', ...formatNames],
   };
   return (
     <div className="filterbar" aria-label="Kombinierbare Filter">
@@ -128,6 +128,9 @@ export function EditorialDashboard() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [materials, setMaterials] = useState<any[]>([]);
   const [quickLinks, setQuickLinks] = useState<any[]>([]);
+  const [formats, setFormats] = useState<any[]>([]);
+  const [postRules, setPostRules] = useState<any[]>([]);
+  const [taskRules, setTaskRules] = useState<any[]>([]);
   const [filters, setFilters] = useState<Filters>({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle' });
 
   // Auth-Session laden und auf Änderungen (Anmeldung/Abmeldung) reagieren.
@@ -144,12 +147,15 @@ export function EditorialDashboard() {
     let cancelled = false;
 
     const loadAll = async () => {
-      const [itemsRes, postsRes, tasksRes, materialsRes, quickLinksRes] = await Promise.all([
+      const [itemsRes, postsRes, tasksRes, materialsRes, quickLinksRes, formatsRes, postRulesRes, taskRulesRes] = await Promise.all([
         supabase.from('editorial_items').select('*, editorial_formats(name, category, logic_type)').is('archived_at', null).order('created_at'),
         supabase.from('posts').select('*').is('archived_at', null).order('planned_date'),
         supabase.from('tasks').select('*').is('archived_at', null).order('due_date'),
         supabase.from('materials').select('*').order('due_date'),
         supabase.from('quick_links').select('*').order('sort_order'),
+        supabase.from('editorial_formats').select('*').eq('active', true).order('category').order('name'),
+        supabase.from('post_rules').select('*').eq('active', true),
+        supabase.from('task_rules').select('*').eq('active', true),
       ]);
       if (cancelled) return;
       if (itemsRes.error) console.error('Redaktionsanlässe konnten nicht geladen werden', itemsRes.error);
@@ -157,11 +163,17 @@ export function EditorialDashboard() {
       if (tasksRes.error) console.error('Aufgaben konnten nicht geladen werden', tasksRes.error);
       if (materialsRes.error) console.error('Materialien konnten nicht geladen werden', materialsRes.error);
       if (quickLinksRes.error) console.error('Schnellzugriff-Links konnten nicht geladen werden', quickLinksRes.error);
+      if (formatsRes.error) console.error('Formate konnten nicht geladen werden', formatsRes.error);
+      if (postRulesRes.error) console.error('Post-Regeln konnten nicht geladen werden', postRulesRes.error);
+      if (taskRulesRes.error) console.error('Aufgaben-Regeln konnten nicht geladen werden', taskRulesRes.error);
       setItems((itemsRes.data ?? []).map(mapItem));
       setPosts((postsRes.data ?? []).map(mapPost));
       setTasks((tasksRes.data ?? []).map(mapTask));
       setMaterials((materialsRes.data ?? []).map(mapMaterial));
       setQuickLinks((quickLinksRes.data ?? []).map(mapQuickLink));
+      setFormats((formatsRes.data ?? []).map(mapFormat));
+      setPostRules((postRulesRes.data ?? []).map(mapPostRule));
+      setTaskRules((taskRulesRes.data ?? []).map(mapTaskRule));
     };
 
     void loadAll();
@@ -184,6 +196,9 @@ export function EditorialDashboard() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, applyChange(setTasks, mapTask))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'materials' }, applyChange(setMaterials, mapMaterial))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'quick_links' }, applyChange(setQuickLinks, mapQuickLink))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'editorial_formats' }, applyChange(setFormats, mapFormat))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'post_rules' }, applyChange(setPostRules, mapPostRule))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'task_rules' }, applyChange(setTaskRules, mapTaskRule))
       .subscribe();
 
     return () => {
@@ -306,6 +321,136 @@ export function EditorialDashboard() {
     });
     setEditingLink(null);
   }, [editingLink, linkDraft]);
+
+  const emptyItemDraft = useCallback(() => ({
+    formatId: formats[0]?.id ?? '',
+    title: '',
+    subtitle: '',
+    eventStart: TODAY,
+    eventEnd: '',
+    publicationTargetDate: TODAY,
+    eventReferenceDate: TODAY,
+    materialReadyDate: '',
+    contentOwner: formats[0]?.defaultContentOwner ?? 'Tom',
+    graphicsOwner: formats[0]?.defaultGraphicsOwner ?? 'Tom',
+    approvalOwner: formats[0]?.defaultApprovalOwner ?? 'Tom',
+    publishOwner: formats[0]?.defaultPublishOwner ?? 'Norbert',
+  }), [formats]);
+
+  const [creatingItem, setCreatingItem] = useState(false);
+  const [itemDraft, setItemDraft] = useState<any>(emptyItemDraft());
+  const [savingItem, setSavingItem] = useState(false);
+  const [itemSaveError, setItemSaveError] = useState('');
+
+  const startCreatingItem = useCallback(() => {
+    setItemDraft(emptyItemDraft());
+    setItemSaveError('');
+    setCreatingItem(true);
+  }, [emptyItemDraft]);
+
+  const cancelCreatingItem = useCallback(() => { setCreatingItem(false); setItemSaveError(''); }, []);
+
+  // Bei Formatwechsel im Formular die Verantwortlichen auf die Format-Vorgaben zurücksetzen.
+  const chooseItemFormat = useCallback((formatId: string) => {
+    const format = formats.find((entry) => entry.id === formatId);
+    setItemDraft((current: any) => ({
+      ...current,
+      formatId,
+      contentOwner: format?.defaultContentOwner ?? current.contentOwner,
+      graphicsOwner: format?.defaultGraphicsOwner ?? current.graphicsOwner,
+      approvalOwner: format?.defaultApprovalOwner ?? current.approvalOwner,
+      publishOwner: format?.defaultPublishOwner ?? current.publishOwner,
+    }));
+  }, [formats]);
+
+  const saveItemCreate = useCallback(async () => {
+    const format = formats.find((entry) => entry.id === itemDraft.formatId);
+    if (!format || !itemDraft.title.trim()) return;
+    setSavingItem(true);
+    setItemSaveError('');
+
+    const row = {
+      format_id: format.id,
+      title: itemDraft.title.trim(),
+      subtitle: itemDraft.subtitle.trim() || null,
+      event_start: format.logicType === 'event' && itemDraft.eventStart ? `${itemDraft.eventStart}T12:00:00Z` : null,
+      event_end: format.logicType === 'event' && itemDraft.eventEnd ? `${itemDraft.eventEnd}T12:00:00Z` : null,
+      publication_target_date: format.logicType === 'publication' ? itemDraft.publicationTargetDate || null : null,
+      event_reference_date: format.logicType === 'event_material' ? itemDraft.eventReferenceDate || null : null,
+      material_ready_date: format.logicType === 'event_material' ? itemDraft.materialReadyDate || null : null,
+      content_owner: itemDraft.contentOwner,
+      graphics_owner: itemDraft.graphicsOwner,
+      approval_owner: itemDraft.approvalOwner,
+      publish_owner: itemDraft.publishOwner,
+    };
+
+    const { data: inserted, error: insertError } = await supabase.from('editorial_items').insert(row).select().single();
+    if (insertError || !inserted) {
+      console.error('Redaktionsanlass konnte nicht angelegt werden', insertError);
+      setItemSaveError('Anlegen fehlgeschlagen. Bitte erneut versuchen.');
+      setSavingItem(false);
+      return;
+    }
+
+    // Zeitplan (Posts + Aufgaben) über dieselbe Logik erzeugen, die auch die
+    // Kalender-/Aufgabenautomatik im laufenden Betrieb nutzt.
+    const scheduleItem = {
+      id: inserted.id,
+      formatId: format.id,
+      logicType: format.logicType,
+      eventStart: row.event_start ? row.event_start.slice(0, 10) : undefined,
+      eventEnd: row.event_end ? row.event_end.slice(0, 10) : undefined,
+      publicationTargetDate: row.publication_target_date ?? undefined,
+      eventReferenceDate: row.event_reference_date ?? undefined,
+      materialReadyDate: row.material_ready_date ?? undefined,
+      contentOwner: row.content_owner,
+      graphicsOwner: row.graphics_owner,
+      approvalOwner: row.approval_owner,
+      publishOwner: row.publish_owner,
+    };
+    const { posts: newPosts, tasks: newTasks } = generateSchedule({ item: scheduleItem, postRules, taskRules, today: TODAY });
+
+    let insertedPosts: any[] = [];
+    if (newPosts.length) {
+      const { data, error } = await supabase.from('posts').insert(newPosts.map((post: any) => ({
+        editorial_item_id: post.editorialItemId,
+        post_rule_id: post.postRuleId,
+        post_type: post.type,
+        planned_date: post.plannedDate,
+        regular_date: post.regularDate,
+        status: post.status,
+        conditional: post.conditional,
+        conditional_state: post.conditionalState,
+        late_entry: post.lateEntry,
+        priority: post.priority,
+      }))).select('id, post_rule_id');
+      if (error) console.error('Postings konnten nicht angelegt werden', error);
+      insertedPosts = data ?? [];
+    }
+
+    if (newTasks.length) {
+      // Temporäre generateSchedule-IDs (nur lokal) auf die echten Supabase-IDs der
+      // gerade angelegten Posts ummappen, damit tasks.post_id gültig auf posts.id zeigt.
+      const ruleIdToRealPostId = Object.fromEntries(insertedPosts.map((row2) => [row2.post_rule_id, row2.id]));
+      const tempIdToRealPostId = Object.fromEntries(newPosts.map((post: any) => [post.id, ruleIdToRealPostId[post.postRuleId]]));
+      const { error } = await supabase.from('tasks').insert(newTasks.map((task: any) => ({
+        editorial_item_id: task.editorialItemId,
+        post_id: task.postId ? tempIdToRealPostId[task.postId] ?? null : null,
+        title: task.title,
+        owner_name: task.owner,
+        due_date: task.dueDate,
+        status: task.status,
+        task_type: task.type,
+        relative_offset_days: task.relativeOffsetDays ?? null,
+        auto_generated: task.autoGenerated,
+      })));
+      if (error) console.error('Aufgaben konnten nicht angelegt werden', error);
+    }
+
+    setSavingItem(false);
+    setCreatingItem(false);
+    // Item/Posts/Tasks erscheinen automatisch über die bestehende Realtime-Subscription.
+  }, [formats, itemDraft, postRules, taskRules]);
 
   const saveMovePost = useCallback(() => {
     if (!movingPost || !moveDate) return;
@@ -457,10 +602,10 @@ export function EditorialDashboard() {
         </header>
 
         <div className="workspace">
-          {view !== 'Übersicht' && <FilterBar filters={filters} onChange={setFilters} />}
+          {view !== 'Übersicht' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} />}
 
-          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} />}
-          {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} />}
+          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} onCreateItem={startCreatingItem} />}
+          {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
           {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} onCreate={startCreatingTask} />}
           {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} />}
@@ -470,6 +615,7 @@ export function EditorialDashboard() {
         <PostMoveDialog items={items} moving={movingPost} date={moveDate} setDate={setMoveDate} onSave={saveMovePost} onCancel={cancelMovePost} />
         <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} />
         <QuickLinkEditDialog editing={editingLink} draft={linkDraft} setDraft={setLinkDraft} onSave={saveLinkEdit} onCancel={cancelLinkEdit} />
+        <ItemCreateDialog open={creatingItem} formats={formats} draft={itemDraft} setDraft={setItemDraft} onChooseFormat={chooseItemFormat} onSave={saveItemCreate} onCancel={cancelCreatingItem} saving={savingItem} error={itemSaveError} />
 
         <nav className="mobile-nav" aria-label="Mobile Hauptnavigation">{nav.map(({ name, label, icon: Icon }) => (
           <button key={name} className={view === name ? 'active' : ''} onClick={() => setView(name)}><Icon /><span>{name === 'Redaktionsplan' ? 'Anlässe' : label}</span></button>
@@ -479,7 +625,7 @@ export function EditorialDashboard() {
   );
 }
 
-function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEditTask, onOpenItem, quickLinks, onEditLink }: any) {
+function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEditTask, onOpenItem, quickLinks, onEditLink, onCreateItem }: any) {
   const [taskPeople, setTaskPeople] = useState<string[]>(['Tom']);
   const [taskTimes, setTaskTimes] = useState<string[]>(['Überfällig']);
   const open = tasks.filter((task: any) => task.status !== 'erledigt');
@@ -499,7 +645,7 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
         <Metric label={'Material\u00adprobleme'} value={String(blocked.length)} detail="" tone="danger" icon={ImageIcon} action="Details ansehen" onClick={() => onNavigate('Materialien')} />
       </section>
       <aside className="overview-actions">
-        <button type="button" className="primary-create" onClick={() => onNavigate('Redaktionsplan')}><Plus /> Neuer Redaktionsanlass</button>
+        <button type="button" className="primary-create" onClick={onCreateItem}><Plus /> Neuer Redaktionsanlass</button>
         <div className="brand-quote">„ Musik berührt dort,<br />wo Worte oft nicht reichen.“<span /></div>
       </aside>
     </div>
@@ -551,9 +697,9 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
   </>;
 }
 
-function EditorialPlan({ items, posts, onOpenItem }: { items: any[]; posts: any[]; onOpenItem: (itemId: string) => void }) {
+function EditorialPlan({ items, posts, onOpenItem, onCreateItem }: { items: any[]; posts: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void }) {
   const openRow = (event: any, itemId: string) => { if (event.key && event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault?.(); onOpenItem(itemId); };
-  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Veröffentlichungen</p><h1>Redaktionsplan</h1></div><Badge variant="outline">{posts.length} Ergebnisse</Badge></div>
+  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Veröffentlichungen</p><h1>Redaktionsplan</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Badge variant="outline">{posts.length} Ergebnisse</Badge><Button size="sm" onClick={onCreateItem}><Plus /> Neuer Redaktionsanlass</Button></div></div>
     <div className="desktop-table"><table><thead><tr><th>Datum</th><th>Inhalt</th><th>Posting</th><th>Status</th><th>Verantwortung</th><th>Kanäle</th><th><span className="sr-only">Details</span></th></tr></thead><tbody>{[...posts].sort((a,b) => a.plannedDate.localeCompare(b.plannedDate)).map((post) => { const item = itemFor(items, post.editorialItemId); return <tr key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{formatDate(post.plannedDate)}</strong>{post.lateEntry && <small>neu geplant</small>}</td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{post.type}{post.conditional && <small>bedingt</small>}</td><td><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge></td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td><div className="channel-dots" aria-label="Instagram Facebook LinkedIn"><i>IG</i><i>FB</i><i>IN</i></div></td><td><ChevronRight size={17} /></td></tr>; })}</tbody></table></div>
     <div className="mobile-cards">{posts.map((post) => { const item = itemFor(items, post.editorialItemId); return <article className="plan-card" key={post.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}</span><h3>{item.title}</h3></div><Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge><div className="plan-card-row"><strong>{fullDate(post.plannedDate)}</strong><span>{post.type}</span></div><div className="meta"><span><Users /> {item.contentOwner} / {item.publishOwner}</span><span>IG · FB · IN</span></div></article>; })}</div>
   </section>;
@@ -660,6 +806,62 @@ function QuickLinkEditDialog({ editing, draft, setDraft, onSave, onCancel }: { e
           <label htmlFor="link-url"><span>Link (URL)</span><Input id="link-url" type="url" placeholder="https://…" value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} /></label>
         </div>
         <DialogFooter><Button variant="outline" onClick={onCancel}>Abbrechen</Button><Button onClick={onSave} disabled={!draft.label.trim()}>Speichern</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ItemCreateDialog({ open, formats, draft, setDraft, onChooseFormat, onSave, onCancel, saving, error }: { open: boolean; formats: any[]; draft: any; setDraft: (draft: any) => void; onChooseFormat: (formatId: string) => void; onSave: () => void; onCancel: () => void; saving: boolean; error: string }) {
+  const format = formats.find((entry) => entry.id === draft.formatId);
+  const logicType = format?.logicType;
+  const missingRequiredDate =
+    (logicType === 'event' && !draft.eventStart) ||
+    (logicType === 'publication' && !draft.publicationTargetDate) ||
+    (logicType === 'event_material' && !draft.eventReferenceDate && !draft.materialReadyDate);
+  const owners: [string, string][] = [
+    ['contentOwner', 'Inhalt'],
+    ['graphicsOwner', 'Grafik'],
+    ['approvalOwner', 'Freigabe'],
+    ['publishOwner', 'Veröffentlichung'],
+  ];
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onCancel(); }}>
+      <DialogContent className="task-dialog">
+        <DialogHeader><DialogTitle>Neuer Redaktionsanlass</DialogTitle><DialogDescription>Format wählen, Titel und Termin(e) eintragen – Postings und Aufgaben werden danach automatisch erzeugt.</DialogDescription></DialogHeader>
+        <div className="task-form">
+          <label htmlFor="item-format"><span>Format</span>
+            <Select value={draft.formatId} onValueChange={(id) => onChooseFormat(id as string)}>
+              <SelectTrigger id="item-format" className="task-form-select"><SelectValue /></SelectTrigger>
+              <SelectContent>{formats.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.name} ({entry.category})</SelectItem>)}</SelectContent>
+            </Select>
+          </label>
+          <label htmlFor="item-title"><span>Titel</span><Input id="item-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="z. B. Guitar Factory Herbst 2026" /></label>
+          <label htmlFor="item-subtitle"><span>Untertitel (optional)</span><Input id="item-subtitle" value={draft.subtitle} onChange={(event) => setDraft({ ...draft, subtitle: event.target.value })} /></label>
+
+          {logicType === 'event' && <>
+            <label htmlFor="item-event-start"><span>Beginn</span><Input id="item-event-start" type="date" value={draft.eventStart} onChange={(event) => setDraft({ ...draft, eventStart: event.target.value })} /></label>
+            <label htmlFor="item-event-end"><span>Ende (optional)</span><Input id="item-event-end" type="date" value={draft.eventEnd} onChange={(event) => setDraft({ ...draft, eventEnd: event.target.value })} /></label>
+          </>}
+          {logicType === 'publication' && <label htmlFor="item-publication-date"><span>Ziel-Veröffentlichungsdatum</span><Input id="item-publication-date" type="date" value={draft.publicationTargetDate} onChange={(event) => setDraft({ ...draft, publicationTargetDate: event.target.value })} /></label>}
+          {logicType === 'event_material' && <>
+            <label htmlFor="item-reference-date"><span>Bezugstermin</span><Input id="item-reference-date" type="date" value={draft.eventReferenceDate} onChange={(event) => setDraft({ ...draft, eventReferenceDate: event.target.value })} /></label>
+            <label htmlFor="item-material-date"><span>Material fertig ab (optional)</span><Input id="item-material-date" type="date" value={draft.materialReadyDate} onChange={(event) => setDraft({ ...draft, materialReadyDate: event.target.value })} /></label>
+          </>}
+
+          {owners.map(([key, label]) => (
+            <label key={key} htmlFor={`item-${key}`}><span>{label}</span>
+              <Select value={draft[key]} onValueChange={(owner) => setDraft({ ...draft, [key]: owner as string })}>
+                <SelectTrigger id={`item-${key}`} className="task-form-select"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="Tom">Tom</SelectItem><SelectItem value="Norbert">Norbert</SelectItem></SelectContent>
+              </Select>
+            </label>
+          ))}
+          {error && <p style={{ color: 'var(--destructive, crimson)', fontSize: 13 }}>{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel} disabled={saving}>Abbrechen</Button>
+          <Button onClick={onSave} disabled={saving || !draft.title.trim() || !draft.formatId || missingRequiredDate}>{saving ? 'Wird angelegt …' : 'Anlegen'}</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
