@@ -80,6 +80,7 @@ export function mapMaterial(row: any) {
   return {
     id: row.id,
     editorialItemId: row.editorial_item_id,
+    postId: row.post_id ?? undefined,
     title: row.title,
     type: row.material_type,
     required: row.required,

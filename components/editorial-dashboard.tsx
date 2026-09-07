@@ -342,7 +342,7 @@ export function EditorialDashboard() {
     });
   }, [tasks]);
 
-  const updateTask = useCallback((id: string, changes: Record<string, string>) => {
+  const updateTask = useCallback((id: string, changes: Record<string, any>) => {
     setTasks((current) => current.map((task) => task.id === id ? { ...task, ...changes } : task));
     const columns = Object.fromEntries(
       Object.entries(changes).map(([key, value]) => [TASK_COLUMN[key] ?? key, value]),
@@ -354,24 +354,24 @@ export function EditorialDashboard() {
 
   const [editingTask, setEditingTask] = useState<any>(null);
   const [creatingTask, setCreatingTask] = useState(false);
-  const [taskDraft, setTaskDraft] = useState({ title: '', owner: 'Tom', dueDate: '', status: 'offen', priority: 50, notes: '', editorialItemId: '' });
+  const [taskDraft, setTaskDraft] = useState({ title: '', owner: 'Tom', dueDate: '', status: 'offen', priority: 50, notes: '', editorialItemId: '', referenceUrl: '' });
 
   const startEditingTask = useCallback((task: any) => {
     setEditingTask(task);
     setCreatingTask(false);
-    setTaskDraft({ title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status, priority: task.priority ?? 50, notes: task.notes ?? '', editorialItemId: task.editorialItemId });
+    setTaskDraft({ title: task.title, owner: task.owner, dueDate: task.dueDate, status: task.status, priority: task.priority ?? 50, notes: task.notes ?? '', editorialItemId: task.editorialItemId, referenceUrl: task.referenceUrl ?? '' });
   }, []);
 
   const startCreatingTask = useCallback(() => {
     setEditingTask(null);
     setCreatingTask(true);
-    setTaskDraft({ title: '', owner: 'Tom', dueDate: TODAY, status: 'offen', priority: 50, notes: '', editorialItemId: items[0]?.id ?? '' });
+    setTaskDraft({ title: '', owner: 'Tom', dueDate: TODAY, status: 'offen', priority: 50, notes: '', editorialItemId: items[0]?.id ?? '', referenceUrl: '' });
   }, [items]);
 
   const saveTaskEdit = useCallback(() => {
     if (!taskDraft.title.trim() || !taskDraft.dueDate) return;
     if (editingTask) {
-      updateTask(editingTask.id, { title: taskDraft.title.trim(), owner: taskDraft.owner, dueDate: taskDraft.dueDate, status: taskDraft.status, priority: taskDraft.priority, notes: taskDraft.notes });
+      updateTask(editingTask.id, { title: taskDraft.title.trim(), owner: taskDraft.owner, dueDate: taskDraft.dueDate, status: taskDraft.status, priority: taskDraft.priority, notes: taskDraft.notes, referenceUrl: taskDraft.referenceUrl.trim() || null });
       setEditingTask(null);
       return;
     }
@@ -388,6 +388,7 @@ export function EditorialDashboard() {
         status: taskDraft.status,
         priority: taskDraft.priority,
         notes: taskDraft.notes || null,
+        reference_url: taskDraft.referenceUrl.trim() || null,
         task_type: 'manuell',
         auto_generated: false,
       }).then(({ error }) => {
@@ -710,6 +711,84 @@ export function EditorialDashboard() {
     setCreatingItem(true);
   }, []);
 
+  // "Material hinzufügen": eigenständiger, schlanker Anlegen-Dialog (kein Bearbeiten
+  // bestehender Materialien vorgesehen – dafür reicht aktuell direktes Ändern in Supabase).
+  // itemId ist optional vorbelegt, wenn der Dialog aus der Detailansicht eines konkreten
+  // Anlasses heraus geöffnet wird (ItemDetailDialog); aus der globalen Materialien-Ansicht
+  // heraus (MaterialsView) muss der Anlass frei gewählt werden.
+  const [creatingMaterial, setCreatingMaterial] = useState(false);
+  const [materialDraft, setMaterialDraft] = useState({ editorialItemId: '', postId: '', materialType: 'Text', title: '', required: true, status: 'fehlt', url: '', dueDate: '', notes: '' });
+
+  const startCreatingMaterial = useCallback((itemId?: string) => {
+    setMaterialDraft({ editorialItemId: itemId || items[0]?.id || '', postId: '', materialType: 'Text', title: '', required: true, status: 'fehlt', url: '', dueDate: '', notes: '' });
+    setCreatingMaterial(true);
+  }, [items]);
+
+  const cancelCreatingMaterial = useCallback(() => setCreatingMaterial(false), []);
+
+  const saveMaterialCreate = useCallback(() => {
+    if (!materialDraft.editorialItemId || !materialDraft.title.trim()) return;
+    supabase.from('materials').insert({
+      editorial_item_id: materialDraft.editorialItemId,
+      post_id: materialDraft.postId || null,
+      material_type: materialDraft.materialType,
+      title: materialDraft.title.trim(),
+      required: materialDraft.required,
+      status: materialDraft.status,
+      url: materialDraft.url.trim() || null,
+      due_date: materialDraft.dueDate || null,
+      notes: materialDraft.notes.trim() || null,
+    }).select().single().then(({ data, error }) => {
+      if (error || !data) { console.error('Material konnte nicht angelegt werden', error); return; }
+      // Sofort lokal übernehmen statt nur auf die Echtzeit-Zustellung zu warten (analog zu
+      // saveItemCreate) – materials ist ohnehin schon per Realtime abonniert, das hier sorgt
+      // nur für sofortige Sichtbarkeit ohne Wartezeit.
+      setMaterials((current) => [...current, mapMaterial(data)]);
+    });
+    setCreatingMaterial(false);
+  }, [materialDraft]);
+
+  // Verwaltung der formatspezifischen Schnellzugriff-Links (FormatsAndRulesView). Ein
+  // gemeinsamer Dialog-Zustand für Anlegen UND Bearbeiten: formatLinkDraft.id === null
+  // bedeutet "wird neu angelegt", sonst wird der bestehende Link mit dieser id aktualisiert.
+  const [formatLinkDraft, setFormatLinkDraft] = useState<any>(null);
+
+  const startCreatingFormatLink = useCallback((formatId: string) => {
+    setFormatLinkDraft({ id: null, formatId, label: '', url: '' });
+  }, []);
+
+  const startEditingFormatLink = useCallback((link: any) => {
+    setFormatLinkDraft({ id: link.id, formatId: link.formatId, label: link.label, url: link.url });
+  }, []);
+
+  const cancelFormatLinkEdit = useCallback(() => setFormatLinkDraft(null), []);
+
+  const saveFormatLinkEdit = useCallback(() => {
+    if (!formatLinkDraft || !formatLinkDraft.label.trim()) return;
+    const label = formatLinkDraft.label.trim();
+    const url = formatLinkDraft.url.trim();
+    if (formatLinkDraft.id) {
+      setFormatQuickLinks((current) => current.map((link) => link.id === formatLinkDraft.id ? { ...link, label, url } : link));
+      supabase.from('format_quick_links').update({ label, url }).eq('id', formatLinkDraft.id).then(({ error }) => {
+        if (error) console.error('Format-Link konnte nicht gespeichert werden', error);
+      });
+    } else {
+      supabase.from('format_quick_links').insert({ format_id: formatLinkDraft.formatId, label, url }).select().single().then(({ data, error }) => {
+        if (error || !data) { console.error('Format-Link konnte nicht angelegt werden', error); return; }
+        setFormatQuickLinks((current) => [...current, mapFormatQuickLink(data)]);
+      });
+    }
+    setFormatLinkDraft(null);
+  }, [formatLinkDraft]);
+
+  const deleteFormatLink = useCallback((id: string) => {
+    if (typeof window !== 'undefined' && !window.confirm('Diesen Link wirklich löschen?')) return;
+    setFormatQuickLinks((current) => current.filter((link) => link.id !== id));
+    supabase.from('format_quick_links').delete().eq('id', id).then(({ error }) => {
+      if (error) console.error('Format-Link konnte nicht gelöscht werden', error);
+    });
+  }, []);
+
   // Automatische Archivierung: sobald ein aktiver Anlass isItemComplete() erfüllt (Termin
   // verstrichen + alle zugehörigen Aufgaben erledigt/gestrichen), wird er ohne weiteres Zutun
   // archiviert. Läuft bei jeder Änderung an items/tasks erneut – ein bereits archivierter Anlass
@@ -864,14 +943,15 @@ export function EditorialDashboard() {
           {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onDeletePost={deletePost} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
           {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} onCreate={startCreatingTask} />}
-          {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} />}
-          {view === 'Formate & Regeln' && <FormatsAndRulesView formats={formats} postRules={postRules} />}
+          {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} onCreate={() => startCreatingMaterial()} />}
+          {view === 'Formate & Regeln' && <FormatsAndRulesView formats={formats} postRules={postRules} formatQuickLinks={formatQuickLinks} onCreateLink={startCreatingFormatLink} onEditLink={startEditingFormatLink} onDeleteLink={deleteFormatLink} />}
           {view === 'Archiv' && <ArchivView items={archivedItems} onOpenItem={setOpenArchivedItemId} onReactivate={reactivateItem} onHardDelete={hardDeleteItem} />}
         </div>
 
         <TaskEditDialog items={items} editing={editingTask} creating={creatingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} onDelete={deleteTask} />
         <PostMoveDialog items={items} moving={movingPost} date={moveDate} setDate={setMoveDate} onSave={saveMovePost} onCancel={cancelMovePost} />
-        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onDeletePost={deletePost} onArchiveItem={archiveItem} onItemUpdated={applyItemUpdate} />
+        <MaterialEditDialog items={items} posts={posts} open={creatingMaterial} draft={materialDraft} setDraft={setMaterialDraft} onSave={saveMaterialCreate} onCancel={cancelCreatingMaterial} />
+        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onDeletePost={deletePost} onArchiveItem={archiveItem} onCreateMaterial={startCreatingMaterial} onItemUpdated={applyItemUpdate} />
         <ItemDetailDialog
           item={openArchivedItem}
           posts={archivedDetailPosts}
@@ -887,6 +967,7 @@ export function EditorialDashboard() {
           onItemUpdated={() => {}}
         />
         <QuickLinkEditDialog editing={editingLink} draft={linkDraft} setDraft={setLinkDraft} onSave={saveLinkEdit} onCancel={cancelLinkEdit} />
+        <FormatLinkEditDialog draft={formatLinkDraft} setDraft={setFormatLinkDraft} onSave={saveFormatLinkEdit} onCancel={cancelFormatLinkEdit} />
         <ItemCreateDialog open={creatingItem} formats={formats} draft={itemDraft} setDraft={setItemDraft} onChooseFormat={chooseItemFormat} onSave={saveItemCreate} onCancel={cancelCreatingItem} saving={savingItem} error={itemSaveError} />
 
         <nav className="mobile-nav" aria-label="Mobile Hauptnavigation">{nav.map(({ name, label, mobileLabel, icon: Icon }) => (
@@ -1061,7 +1142,7 @@ function CalendarView({ items, posts, onMovePost }: { items: any[]; posts: any[]
 // (TaskEditDialog / PostMoveDialog) obendrüber, statt eigene Bearbeitungslogik
 // zu duplizieren. Da diese Ansicht neu ist, gibt es dafür noch keine eigenen
 // CSS-Klassen im Stylesheet — Layout daher wie bei AuthGate per Inline-Style.
-function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, onEditTask, onMovePost, onDeletePost, onArchiveItem, onReactivate, onHardDelete, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; archived?: boolean; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onDeletePost: (id: string) => void; onArchiveItem?: (id: string) => void; onReactivate?: (item: any) => void; onHardDelete?: (id: string) => void; onItemUpdated: (item: any) => void }) {
+function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, onEditTask, onMovePost, onDeletePost, onArchiveItem, onReactivate, onHardDelete, onCreateMaterial, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; archived?: boolean; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onDeletePost: (id: string) => void; onArchiveItem?: (id: string) => void; onReactivate?: (item: any) => void; onHardDelete?: (id: string) => void; onCreateMaterial?: (itemId: string) => void; onItemUpdated: (item: any) => void }) {
   const row: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 2fr 1fr auto', gap: 12, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border, #e5e5e5)', textAlign: 'left', width: '100%', background: 'none', border: 'none', borderBottomWidth: 1, borderBottomStyle: 'solid' };
   const sectionHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, margin: '20px 0 8px', fontSize: 14, fontWeight: 600 };
   const empty: CSSProperties = { fontSize: 13, opacity: 0.7, padding: '4px 0' };
@@ -1164,7 +1245,11 @@ function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, on
             )
           )) : <p style={empty}>Keine Aufgaben vorhanden.</p>}
 
-          <h3 style={sectionHeading}><FileImage size={16} /> Materialien</h3>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h3 style={{ ...sectionHeading, margin: 0 }}><FileImage size={16} /> Materialien</h3>
+            {!archived && <Button variant="ghost" size="sm" onClick={() => onCreateMaterial?.(item.id)}><Plus size={14} /> Material</Button>}
+          </div>
+          {item?.format && <p style={{ ...empty, margin: '0 0 8px' }}>Empfohlener SharePoint-Ordner: {item.format}</p>}
           {materials.length ? materials.map((material) => (
             <div style={row} key={material.id}>
               <span>{material.title}</span>
@@ -1316,7 +1401,7 @@ function formatTimingSummary(format: any, postRules: any[]) {
   return parts.join(' · ');
 }
 
-function FormatsAndRulesView({ formats, postRules }: { formats: any[]; postRules: any[] }) {
+function FormatsAndRulesView({ formats, postRules, formatQuickLinks, onCreateLink, onEditLink, onDeleteLink }: { formats: any[]; postRules: any[]; formatQuickLinks: any[]; onCreateLink: (formatId: string) => void; onEditLink: (link: any) => void; onDeleteLink: (id: string) => void }) {
   const grouped = formats.reduce((acc: Record<string, any[]>, format) => {
     (acc[format.category] ||= []).push(format);
     return acc;
@@ -1331,7 +1416,7 @@ function FormatsAndRulesView({ formats, postRules }: { formats: any[]; postRules
         <div key={category} style={{ marginBottom: 28 }}>
           <h2 style={{ fontSize: 15, margin: '0 0 10px' }}>{category}</h2>
           <div style={{ display: 'grid', gap: 10 }}>
-            {list.map((format) => (
+            {list.map((format) => { const links = formatQuickLinks.filter((link) => link.formatId === format.id); return (
               <div key={format.id} style={{ border: '1px solid var(--border, #e5e7eb)', borderRadius: 10, padding: '12px 16px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
                   <strong>{format.name}</strong>
@@ -1339,8 +1424,19 @@ function FormatsAndRulesView({ formats, postRules }: { formats: any[]; postRules
                 </div>
                 <p style={{ margin: '0 0 4px', fontSize: 14 }}>{formatTimingSummary(format, postRules)}</p>
                 {FORMAT_NOTES[format.slug] && <p style={{ margin: 0, fontSize: 13, color: 'var(--muted-foreground, #6b7280)' }}>{FORMAT_NOTES[format.slug]}</p>}
+                <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {links.map((link) => (
+                    <div key={link.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+                      <Link2 size={12} />
+                      {link.url ? <a href={link.url} target="_blank" rel="noreferrer" style={{ flex: 1 }}>{link.label}</a> : <span style={{ flex: 1 }}>{link.label} <small style={{ color: 'var(--muted-foreground, #6b7280)' }}>(keine URL hinterlegt)</small></span>}
+                      <Button variant="ghost" size="icon-sm" onClick={() => onEditLink(link)} aria-label={`${link.label} bearbeiten`}><Pencil size={12} /></Button>
+                      <Button variant="ghost" size="icon-sm" onClick={() => onDeleteLink(link.id)} aria-label={`${link.label} löschen`}><Trash2 size={12} /></Button>
+                    </div>
+                  ))}
+                  <Button variant="ghost" size="sm" onClick={() => onCreateLink(format.id)} style={{ alignSelf: 'flex-start', marginTop: links.length ? 4 : 0 }}><Plus size={13} /> Link hinzufügen</Button>
+                </div>
               </div>
-            ))}
+            ); })}
           </div>
         </div>
       ))}
@@ -1349,7 +1445,62 @@ function FormatsAndRulesView({ formats, postRules }: { formats: any[]; postRules
   );
 }
 
-function TaskEditDialog({ items, editing, creating, draft, setDraft, onSave, onCancel, onDelete }: { items: any[]; editing: any; creating: boolean; draft: { title: string; owner: string; dueDate: string; status: string; priority: number; notes: string; editorialItemId: string }; setDraft: (draft: any) => void; onSave: () => void; onCancel: () => void; onDelete: (id: string) => void }) {
+// Anlegen/Bearbeiten eines formatspezifischen Schnellzugriff-Links. draft.id === null heißt
+// "wird neu angelegt" (siehe startCreatingFormatLink), sonst wird der bestehende Link mit
+// dieser id aktualisiert (startEditingFormatLink) – ein gemeinsamer Dialog für beide Fälle,
+// analog zu TaskEditDialog (editing vs. creating).
+function FormatLinkEditDialog({ draft, setDraft, onSave, onCancel }: { draft: any; setDraft: (draft: any) => void; onSave: () => void; onCancel: () => void }) {
+  const open = Boolean(draft);
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onCancel(); }}>
+      <DialogContent className="task-dialog">
+        <DialogHeader><DialogTitle>{draft?.id ? 'Link bearbeiten' : 'Link hinzufügen'}</DialogTitle><DialogDescription>Schnellzugriff-Link für dieses Format, z. B. Canva-Vorlage oder SharePoint-Ordner.</DialogDescription></DialogHeader>
+        <div className="task-form">
+          <label htmlFor="format-link-label"><span>Bezeichnung</span><Input id="format-link-label" value={draft?.label ?? ''} onChange={(event) => setDraft({ ...draft, label: event.target.value })} /></label>
+          <label htmlFor="format-link-url"><span>URL</span><Input id="format-link-url" type="url" value={draft?.url ?? ''} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://…" /></label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>Abbrechen</Button>
+          <Button onClick={onSave} disabled={!draft?.label?.trim()}>{draft?.id ? 'Speichern' : 'Anlegen'}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Anlegen-Dialog für ein neues Material (siehe startCreatingMaterial/saveMaterialCreate).
+// Bewusst nur zum Anlegen – ein Bearbeiten bestehender Materialien ist (Stand jetzt) noch
+// nicht vorgesehen, analog zum bisherigen Funktionsumfang von QuickLinkEditDialog.
+function MaterialEditDialog({ items, posts, open, draft, setDraft, onSave, onCancel }: { items: any[]; posts: any[]; open: boolean; draft: any; setDraft: (draft: any) => void; onSave: () => void; onCancel: () => void }) {
+  // Nur Postings des gerade gewählten Anlasses zur Auswahl anbieten – ein Material kann
+  // optional einem einzelnen Posting statt dem ganzen Anlass zugeordnet werden (z. B. "dieses
+  // Bild nur für die Erinnerung", nicht für die Hauptankündigung).
+  const postsForItem = posts.filter((post) => post.editorialItemId === draft.editorialItemId);
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onCancel(); }}>
+      <DialogContent className="task-dialog">
+        <DialogHeader><DialogTitle>Material hinzufügen</DialogTitle><DialogDescription>Wird dem gewählten Redaktionsanlass zugeordnet.</DialogDescription></DialogHeader>
+        <div className="task-form">
+          <label htmlFor="material-item"><span>Redaktionsanlass</span><Select value={draft.editorialItemId} onValueChange={(id) => setDraft({ ...draft, editorialItemId: id as string, postId: '' })}><SelectTrigger id="material-item" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent>{items.map((item: any) => <SelectItem key={item.id} value={item.id}>{item.title}</SelectItem>)}</SelectContent></Select></label>
+          <label htmlFor="material-post"><span>Posting (optional)</span><Select value={draft.postId || 'kein'} onValueChange={(id) => setDraft({ ...draft, postId: id === 'kein' ? '' : (id as string) })}><SelectTrigger id="material-post" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="kein">Ganzer Anlass (kein bestimmtes Posting)</SelectItem>{postsForItem.map((post: any) => <SelectItem key={post.id} value={post.id}>{post.type} · {formatDate(post.plannedDate)}</SelectItem>)}</SelectContent></Select></label>
+          <label htmlFor="material-title"><span>Titel</span><Input id="material-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
+          <label htmlFor="material-type"><span>Art</span><Select value={draft.materialType} onValueChange={(value) => setDraft({ ...draft, materialType: value as string })}><SelectTrigger id="material-type" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Text">Text</SelectItem><SelectItem value="Audio">Audio</SelectItem><SelectItem value="Video">Video</SelectItem><SelectItem value="E-Mail">E-Mail</SelectItem><SelectItem value="Link">Link</SelectItem></SelectContent></Select></label>
+          <label htmlFor="material-required"><span>Pflicht?</span><Select value={draft.required ? 'ja' : 'nein'} onValueChange={(value) => setDraft({ ...draft, required: value === 'ja' })}><SelectTrigger id="material-required" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ja">Ja, erforderlich</SelectItem><SelectItem value="nein">Optional</SelectItem></SelectContent></Select></label>
+          <label htmlFor="material-status"><span>Status</span><Select value={draft.status} onValueChange={(value) => setDraft({ ...draft, status: value as string })}><SelectTrigger id="material-status" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="fehlt">fehlt</SelectItem><SelectItem value="angefragt">angefragt</SelectItem><SelectItem value="vorhanden">vorhanden</SelectItem><SelectItem value="nicht_erforderlich">nicht erforderlich</SelectItem></SelectContent></Select></label>
+          <label htmlFor="material-url"><span>Link (optional)</span><Input id="material-url" type="url" value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="z. B. Canva/SharePoint/Drive-Link" /></label>
+          <label htmlFor="material-due-date"><span>Fällig bis (optional)</span><Input id="material-due-date" type="date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} /></label>
+          <label htmlFor="material-notes"><span>Notiz</span><Textarea id="material-notes" value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} /></label>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>Abbrechen</Button>
+          <Button onClick={onSave} disabled={!draft.title.trim() || !draft.editorialItemId}>Anlegen</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function TaskEditDialog({ items, editing, creating, draft, setDraft, onSave, onCancel, onDelete }: { items: any[]; editing: any; creating: boolean; draft: { title: string; owner: string; dueDate: string; status: string; priority: number; notes: string; editorialItemId: string; referenceUrl: string }; setDraft: (draft: any) => void; onSave: () => void; onCancel: () => void; onDelete: (id: string) => void }) {
   const open = Boolean(editing) || creating;
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onCancel(); }}>
@@ -1362,6 +1513,7 @@ function TaskEditDialog({ items, editing, creating, draft, setDraft, onSave, onC
           <label htmlFor="task-due-date"><span>Fällig am</span><Input id="task-due-date" type="date" value={draft.dueDate} onChange={(event) => setDraft({ ...draft, dueDate: event.target.value })} /></label>
           <label htmlFor="task-status"><span>Status</span><Select value={draft.status} onValueChange={(status) => setDraft({ ...draft, status: status as string })}><SelectTrigger id="task-status" className="task-form-select"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="offen">offen</SelectItem><SelectItem value="in_arbeit">in Arbeit</SelectItem><SelectItem value="erledigt">erledigt</SelectItem><SelectItem value="gestrichen">gestrichen</SelectItem></SelectContent></Select></label>
           <label htmlFor="task-priority"><span>Priorität (0–100)</span><Input id="task-priority" type="number" min={0} max={100} value={draft.priority} onChange={(event) => setDraft({ ...draft, priority: Number(event.target.value) })} /></label>
+          <label htmlFor="task-reference-url"><span>Link (optional)</span><Input id="task-reference-url" type="url" value={draft.referenceUrl} onChange={(event) => setDraft({ ...draft, referenceUrl: event.target.value })} placeholder="z. B. Link zu Canva/SharePoint/Drive" /></label>
           <label htmlFor="task-notes"><span>Notiz</span><Textarea id="task-notes" value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} /></label>
         </div>
         <DialogFooter>
@@ -1380,10 +1532,10 @@ function TasksView({ items, tasks, onComplete, onEdit, onCreate }: { items: any[
   </section>;
 }
 
-function MaterialsView({ items, materials: visible }: { items: any[]; materials: any[] }) {
+function MaterialsView({ items, materials: visible, onCreate }: { items: any[]; materials: any[]; onCreate: () => void }) {
   const present = visible.filter((material) => material.status === 'vorhanden').length;
-  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Pflichtmaterial und Quellen</p><h1>Materialien</h1></div><div className="material-progress"><Progress value={visible.length ? present / visible.length * 100 : 0}><ProgressLabel>Verfügbar</ProgressLabel><span className="progress-count">{present}/{visible.length}</span></Progress></div></div>
-    <div className="material-grid">{visible.map((material) => { const item = itemFor(items, material.editorialItemId); return <article className="material-card" key={material.id}><div className={cn('material-icon', material.status)}>{material.type === 'Bild' ? <FileImage /> : material.type === 'Audio' ? <Clock3 /> : <PackageCheck />}</div><div className="material-copy"><span className="category-line">{item.title}</span><strong>{material.title}</strong><small>{material.type} · Quelle: {(material.url || material.fileReference) ? <a href={material.url || material.fileReference} target="_blank" rel="noreferrer">{material.source || 'Link öffnen'} <Link2 size={12} /></a> : (material.source || '—')}</small></div><div className="material-state"><Badge className={cn('status-badge', `status-${material.status}`)} variant={material.status === 'vorhanden' ? 'secondary' : material.status === 'fehlt' ? 'destructive' : 'outline'}>{material.status}</Badge>{material.dueDate && <small>bis {formatDate(material.dueDate)}</small>}</div></article>; })}
+  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Pflichtmaterial und Quellen</p><h1>Materialien</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 14 }}><div className="material-progress"><Progress value={visible.length ? present / visible.length * 100 : 0}><ProgressLabel>Verfügbar</ProgressLabel><span className="progress-count">{present}/{visible.length}</span></Progress></div><Button size="sm" onClick={onCreate}><Plus /> Material hinzufügen</Button></div></div>
+    <div className="material-grid">{visible.map((material) => { const item = itemFor(items, material.editorialItemId); return <article className="material-card" key={material.id}><div className={cn('material-icon', material.status)}>{material.type === 'Bild' ? <FileImage /> : material.type === 'Audio' ? <Clock3 /> : <PackageCheck />}</div><div className="material-copy"><span className="category-line">{item.title}</span><strong>{material.title}</strong><small>{material.type} · Quelle: {(material.url || material.fileReference) ? <a href={material.url || material.fileReference} target="_blank" rel="noreferrer">{material.source || 'Link öffnen'} <Link2 size={12} /></a> : (material.source || '—')}</small>{item.format && <small>Empfohlener SharePoint-Ordner: {item.format}</small>}</div><div className="material-state"><Badge className={cn('status-badge', `status-${material.status}`)} variant={material.status === 'vorhanden' ? 'secondary' : material.status === 'fehlt' ? 'destructive' : 'outline'}>{material.status}</Badge>{material.dueDate && <small>bis {formatDate(material.dueDate)}</small>}</div></article>; })}
     {!visible.length && <div className="empty-state"><PackageCheck /><h3>Keine Materialien</h3><p>Für diese Filterkombination liegen keine Materialien vor.</p></div>}</div>
   </section>;
 }
