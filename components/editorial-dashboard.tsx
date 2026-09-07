@@ -1127,7 +1127,7 @@ export function EditorialDashboard() {
         <div className="workspace">
           {view !== 'Übersicht' && view !== 'Formate & Regeln' && view !== 'Archiv' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} itemOptions={itemOptions} view={view} />}
 
-          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} onCreateItem={startCreatingItem} />}
+          {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} density={density} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} onCreateItem={startCreatingItem} />}
           {view === 'Redaktionsanlässe' && <EditorialItemsView items={visibleItems} tasks={tasks} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onViewTasksForItem={viewTasksForItem} onArchiveItem={archiveItem} onOpenFolder={openSharePointFolder} />}
           {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onDeletePost={deletePost} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
@@ -1169,7 +1169,7 @@ export function EditorialDashboard() {
   );
 }
 
-function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEditTask, onOpenItem, quickLinks, onEditLink, onCreateItem }: any) {
+function Overview({ items, posts, tasks, conflict, density, onNavigate, onResolve, onEditTask, onOpenItem, quickLinks, onEditLink, onCreateItem }: any) {
   const [taskPeople, setTaskPeople] = useState<string[]>(['Tom']);
   const [taskTimes, setTaskTimes] = useState<string[]>(['Überfällig']);
   const open = tasks.filter((task: any) => task.status !== 'erledigt');
@@ -1180,11 +1180,14 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
     (!taskTimes.length || taskTimes.includes(timeBucket(task.dueDate)))
   ).sort((a: any, b: any) => a.dueDate.localeCompare(b.dueDate)).slice(0, 4);
   const toggle = (value: string, values: string[], setter: (values: string[]) => void) => setter(values.includes(value) ? values.filter((entry) => entry !== value) : [...values, value]);
-  const weekCounts = [2, 3, conflict?.count || 3, 2];
+  const currentWeekKey = mondayOfWeek(TODAY);
+  const weekKeys = [addDays(currentWeekKey, -14), addDays(currentWeekKey, -7), currentWeekKey, addDays(currentWeekKey, 7)];
+  const weekCounts = weekKeys.map((key: string) => density[key]?.count || 0);
+  const currentWeekData = density[currentWeekKey];
   return <>
     <div className="overview-top">
       <section className="metrics-grid">
-        <Metric label="Geplante Posts diese Woche" value={String(conflict?.count || 0)} detail="" tone="green" icon={CalendarDays} action="Zum Kalender" onClick={() => onNavigate('Kalender')} />
+        <Metric label="Geplante Posts diese Woche" value={String(currentWeekData?.count || 0)} detail="" tone="green" icon={CalendarDays} action="Zum Kalender" onClick={() => onNavigate('Kalender')} />
         <Metric label="Offene Aufgaben" value={String(open.length)} detail="" tone="orange" icon={ClipboardCheck} action="Zu den Aufgaben" onClick={() => onNavigate('Aufgaben')} />
         <Metric label={'Material\u00adprobleme'} value={String(blocked.length)} detail="" tone="danger" icon={ImageIcon} action="Details ansehen" onClick={() => onNavigate('Materialien')} />
       </section>
@@ -1234,7 +1237,7 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
     </section>
 
     <div className="overview-bottom">
-      <section className="panel density-card"><div className="panel-heading compact"><h2><BarChart3 /> Postingdichte</h2></div><div className="density-content"><div className="mini-bars">{weekCounts.map((count: number, index: number) => <div key={index}><span style={{ height: `${count * 17}px` }} className={index === 2 ? 'current' : ''} /><small /></div>)}</div><div className="density-copy"><strong>Aktuelle Woche</strong><b>{conflict?.count || 0} Posts geplant</b><p>{conflict?.level === 'conflict' ? 'Das ist mehr als üblich.' : 'Im normalen Rahmen.'}</p><button type="button" onClick={() => onNavigate('Kalender')}>Details <ChevronRight /></button></div></div></section>
+      <section className="panel density-card"><div className="panel-heading compact"><h2><BarChart3 /> Postingdichte</h2></div><div className="density-content"><div className="mini-bars">{weekCounts.map((count: number, index: number) => <div key={index}><span style={{ height: `${count * 17}px` }} className={index === 2 ? 'current' : ''} /><small /></div>)}</div><div className="density-copy"><strong>Aktuelle Woche</strong><b>{currentWeekData?.count || 0} Posts geplant</b><p>{(currentWeekData?.count || 0) > 3 ? 'Das ist mehr als üblich.' : 'Im normalen Rahmen.'}</p><button type="button" onClick={() => onNavigate('Kalender')}>Details <ChevronRight /></button></div></div></section>
       <section className="panel quick-links"><div className="panel-heading compact"><h2><Link2 /> Schnellzugriff</h2></div>{[...quickLinks].sort((a: any, b: any) => a.sortOrder - b.sortOrder).map((link: any) => <span key={link.id}><i>{link.label.slice(0, 1)}</i>{link.url ? <a href={link.url} target="_blank" rel="noreferrer">{link.label}</a> : <em>{link.label} (kein Link hinterlegt)</em>}<ExternalLink /><button type="button" className="quick-link-edit" onClick={() => onEditLink(link)} aria-label={`${link.label} bearbeiten`}><Pencil size={12} /></button></span>)}</section>
       <section className="visual-brand-card"><img src="/assets/editorial-music.png" alt="Notenblatt neben einer akustischen Gitarre" loading="lazy" /><div>Mehr als Musik.<br />Mehr als ein Moment.<br />Mehr Miteinander.<i /></div></section>
     </div>
