@@ -1346,6 +1346,8 @@ function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, on
   useEffect(() => {
     setEditingDetails(false);
     setDetailDraft(item ? {
+      title: item.title ?? '',
+      subtitle: item.subtitle ?? '',
       eventStart: item.eventStart ?? '',
       eventStartTime: item.eventStartTime ?? '09:00',
       eventEnd: item.eventEnd ?? '',
@@ -1357,8 +1359,11 @@ function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, on
 
   const saveDetails = async () => {
     if (!item || !detailDraft) return;
+    if (!detailDraft.title.trim()) return;
     setSavingDetails(true);
     const { data, error } = await supabase.from('editorial_items').update({
+      title: detailDraft.title.trim(),
+      subtitle: detailDraft.subtitle.trim() || null,
       event_start: detailDraft.eventStart ? new Date(`${detailDraft.eventStart}T${detailDraft.eventStartTime || '09:00'}:00`).toISOString() : null,
       event_end: detailDraft.eventEnd ? new Date(`${detailDraft.eventEnd}T${detailDraft.eventEndTime || '17:00'}:00`).toISOString() : null,
       event_location: detailDraft.location || null,
@@ -1390,19 +1395,22 @@ function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, on
             </div>
             {!editingDetails ? (
               <div style={{ display: 'grid', gap: 4, fontSize: 14, marginTop: 8 }}>
+                <span>Titel: {item?.title}{item?.subtitle ? ` – ${item.subtitle}` : ''}</span>
                 <span>Termin: {item?.eventStart ? `${fullDate(item.eventStart)}${item.eventStartTime ? `, ${item.eventStartTime} Uhr` : ''}${item?.eventEnd ? ` – ${fullDate(item.eventEnd)}${item.eventEndTime ? `, ${item.eventEndTime} Uhr` : ''}` : ''}` : 'kein Termin hinterlegt'}</span>
                 <span>Ort: {item?.location || '—'}</span>
                 <span>Dozent(en): {item?.instructors || '—'}</span>
               </div>
             ) : (
               <div className="task-form" style={{ marginTop: 10 }}>
+                <label htmlFor="detail-title"><span>Titel</span><Input id="detail-title" value={detailDraft?.title} onChange={(event) => setDetailDraft({ ...detailDraft, title: event.target.value })} /></label>
+                <label htmlFor="detail-subtitle"><span>Untertitel</span><Input id="detail-subtitle" value={detailDraft?.subtitle} onChange={(event) => setDetailDraft({ ...detailDraft, subtitle: event.target.value })} /></label>
                 <label htmlFor="detail-event-start"><span>Beginn</span><div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><Input id="detail-event-start" type="date" value={detailDraft?.eventStart} onChange={(event) => setDetailDraft({ ...detailDraft, eventStart: event.target.value })} /><Input type="time" value={detailDraft?.eventStartTime} onChange={(event) => setDetailDraft({ ...detailDraft, eventStartTime: event.target.value })} /></div></label>
                 <label htmlFor="detail-event-end"><span>Ende (optional)</span><div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}><Input id="detail-event-end" type="date" value={detailDraft?.eventEnd} onChange={(event) => setDetailDraft({ ...detailDraft, eventEnd: event.target.value })} /><Input type="time" value={detailDraft?.eventEndTime} onChange={(event) => setDetailDraft({ ...detailDraft, eventEndTime: event.target.value })} /></div></label>
                 <label htmlFor="detail-location"><span>Ort</span><Input id="detail-location" value={detailDraft?.location} onChange={(event) => setDetailDraft({ ...detailDraft, location: event.target.value })} /></label>
                 <label htmlFor="detail-instructors"><span>Dozent(en)</span><Input id="detail-instructors" value={detailDraft?.instructors} onChange={(event) => setDetailDraft({ ...detailDraft, instructors: event.target.value })} placeholder="z. B. Anna Beispiel, Max Mustermann" /></label>
                 <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', gridColumn: '1 / -1' }}>
                   <Button variant="outline" size="sm" onClick={() => setEditingDetails(false)} disabled={savingDetails}>Abbrechen</Button>
-                  <Button size="sm" onClick={saveDetails} disabled={savingDetails}>{savingDetails ? 'Speichert …' : 'Speichern'}</Button>
+                  <Button size="sm" onClick={saveDetails} disabled={savingDetails || !detailDraft?.title?.trim()}>{savingDetails ? 'Speichert …' : 'Speichern'}</Button>
                 </div>
               </div>
             )}
