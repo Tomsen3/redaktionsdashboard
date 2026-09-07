@@ -173,7 +173,7 @@ function FilterBar({ filters, onChange, formatNames, itemOptions, view }: { filt
 function Metric({ label, value, detail, tone = 'neutral', icon: Icon, action, onClick }: { label: string; value: string; detail: string; tone?: string; icon: typeof CalendarDays; action: string; onClick?: () => void }) {
   return <article className={cn('metric', `metric-${tone}`)}>
     <Icon className="metric-icon" />
-    <div className="metric-value"><strong>{value}</strong><span>{label}</span></div>
+    <div className="metric-value" style={{ display: 'flex', flexDirection: 'column', gap: 2 }}><strong>{value}</strong><span>{label}</span></div>
     <small>{detail}</small>
     <button type="button" onClick={onClick}>{action} <ChevronRight /></button>
   </article>;
