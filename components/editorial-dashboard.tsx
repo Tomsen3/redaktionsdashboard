@@ -122,6 +122,34 @@ const sharepointRelativePath = (item: any, allItems: any[]): string[] => {
   return [dateLabel ? `${item.title} – ${dateLabel}` : item.title];
 };
 const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TODAY ? 'Heute' : date <= addDays(TODAY, 6) ? 'Diese Woche' : 'Später';
+
+// Vorbelegte Standard-Uhrzeiten je Format (Anlegen-Dialog, siehe chooseItemFormat) – reine
+// Starthilfe, jederzeit manuell überschreibbar. Nur für Formate mit einem verlässlichen, immer
+// gleichen Muster hinterlegt. "Besondere Veranstaltung" (Sonderveranstaltungen) deckt von
+// Come-together/Sommerakademie bis Liedernacht oder Online-Vortrag zu unterschiedliche Zeiten
+// ab und bekommt deshalb bewusst KEINEN Standard.
+const DEFAULT_EVENT_TIMES: Record<string, { startTime: string; endTime: string; multiDay: boolean }> = {
+  schnupperkurs: { startTime: '18:00', endTime: '18:45', multiDay: false },
+  modul: { startTime: '18:00', endTime: '13:00', multiDay: true }, // Fr 18:00 – So 13:00
+  mitgliederangebot: { startTime: '18:00', endTime: '19:00', multiDay: false },
+};
+// "Besondere Veranstaltung" ist in der Datenbank ein einziges Format für sehr unterschiedliche
+// Anlässe (Come-together/Sommerakademie ebenso wie Liedernächte oder Vorträge außer der Reihe)
+// – ein pauschaler Format-Standard wäre hier falsch. Come-together und Sommerakademie finden
+// aber deutlich regelmäßiger nach demselben Wochenend-Muster statt wie die Weiterbildungsmodule
+// und bekommen deshalb, anhand des eingetippten Titels erkannt, denselben Vorschlag. Alles
+// andere unter "Besondere Veranstaltung" bleibt ohne Vorbelegung.
+const isWeekendSonderformat = (title: string) => {
+  const normalized = title.trim().toLowerCase();
+  return normalized.startsWith('come-together') || normalized.startsWith('come together') || normalized.startsWith('sommerakademie');
+};
+// Datum des nächsten Wochentags ab (einschließlich) referenceDate; targetDay: 0=So … 6=Sa.
+const nextWeekday = (referenceDate: string, targetDay: number) => {
+  const date = new Date(`${referenceDate}T12:00:00`);
+  const diff = (targetDay - date.getDay() + 7) % 7;
+  date.setDate(date.getDate() + diff);
+  return date.toISOString().slice(0, 10);
+};
 // Grob gerasterter Zeitraum für den Archiv-Filter, bezogen auf das Archivierungsdatum
 // (nicht den ursprünglichen Veranstaltungstermin) – analog zu timeBucket, aber rückwärtsgewandt.
 const archivedPeriod = (value?: string) => {
@@ -602,14 +630,28 @@ export function EditorialDashboard() {
   // Bei Formatwechsel im Formular die Verantwortlichen auf die Format-Vorgaben zurücksetzen.
   const chooseItemFormat = useCallback((formatId: string) => {
     const format = formats.find((entry) => entry.id === formatId);
-    setItemDraft((current: any) => ({
-      ...current,
-      formatId,
-      contentOwner: format?.defaultContentOwner ?? current.contentOwner,
-      graphicsOwner: format?.defaultGraphicsOwner ?? current.graphicsOwner,
-      approvalOwner: format?.defaultApprovalOwner ?? current.approvalOwner,
-      publishOwner: format?.defaultPublishOwner ?? current.publishOwner,
-    }));
+    const defaults = format ? DEFAULT_EVENT_TIMES[format.slug] : undefined;
+    setItemDraft((current: any) => {
+      const next = {
+        ...current,
+        formatId,
+        contentOwner: format?.defaultContentOwner ?? current.contentOwner,
+        graphicsOwner: format?.defaultGraphicsOwner ?? current.graphicsOwner,
+        approvalOwner: format?.defaultApprovalOwner ?? current.approvalOwner,
+        publishOwner: format?.defaultPublishOwner ?? current.publishOwner,
+      };
+      if (!defaults) return next;
+      next.eventStartTime = defaults.startTime;
+      next.eventEndTime = defaults.endTime;
+      // Bei Modulen (freitags bis sonntags) zusätzlich das nächste passende Wochenende
+      // vorschlagen, statt nur die Uhrzeit zu setzen – bleibt wie alles hier änderbar.
+      if (defaults.multiDay) {
+        const friday = nextWeekday(current.eventStart || TODAY, 5);
+        next.eventStart = friday;
+        next.eventEnd = nextWeekday(friday, 0); // 0 = Sonntag, ab dem gefundenen Freitag
+      }
+      return next;
+    });
   }, [formats]);
 
   const saveItemCreate = useCallback(async () => {
@@ -1483,7 +1525,12 @@ function ItemCreateDialog({ open, formats, draft, setDraft, onChooseFormat, onSa
               <SelectContent>{formats.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.category === 'Rückblick/Zertifizierung' ? entry.name : `${entry.name} (${entry.category})`}</SelectItem>)}</SelectContent>
             </Select>
           </label>
-          <label htmlFor="item-title"><span>Titel</span><Input id="item-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="z. B. Guitar Factory Herbst 2026" /></label>
+          <label htmlFor="item-title"><span>Titel</span><Input id="item-title" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} onBlur={() => {
+            const format = formats.find((entry) => entry.id === draft.formatId);
+            if (format?.slug !== 'besondere-veranstaltung' || !isWeekendSonderformat(draft.title)) return;
+            const friday = nextWeekday(draft.eventStart || TODAY, 5);
+            setDraft({ ...draft, eventStart: friday, eventEnd: nextWeekday(friday, 0), eventStartTime: '18:00', eventEndTime: '13:00' });
+          }} placeholder="z. B. Guitar Factory Herbst 2026" /></label>
           <label htmlFor="item-subtitle"><span>Untertitel (optional)</span><Input id="item-subtitle" value={draft.subtitle} onChange={(event) => setDraft({ ...draft, subtitle: event.target.value })} /></label>
 
           {logicType === 'event' && <>
