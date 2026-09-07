@@ -89,36 +89,59 @@ const sharepointCategoryFolderUrl = (category: string) => {
   return `https://singendekrankenhaeuser.sharepoint.com/sites/SingendekrankenhuserHomepage/Freigegebene%20Dokumente/Forms/AllItems.aspx?id=${encodeURIComponent(path)}`;
 };
 // Ordnername nach der vereinbarten Konvention "Titel – TT.MM.JJJJ" (Anlässe wie "Modul E"
-// wiederholen sich über die Zeit, deshalb gehört der Termin fest zum Ordnernamen dazu).
+// wiederholen sich über die Zeit, deshalb gehört der Termin fest zum Ordnernamen dazu). Gilt
+// nur für Anlässe OHNE erkanntes Schnupperkurs/Modul-Paar (siehe findModulePair) – bei
+// erkanntem Paar gilt stattdessen das Datumspräfix-Format unten.
 const sharepointDateLabel = (item: any) => {
   const date = keyDateFor(item);
   return date ? new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(`${date}T12:00:00`)) : '';
 };
+// Datumspräfix "JJJJ_MM_TT" für die Modul/Schnupperkurs-Ordnerstruktur (siehe unten) – anders
+// formatiert als sharepointDateLabel, weil es hier VOR den Ordnernamen gesetzt wird statt
+// dahinter angehängt zu werden.
+const sharepointDatePrefix = (item: any) => (keyDateFor(item) ?? '').replaceAll('-', '_');
 
 // Erkennt automatisch, ob ein Anlass zu einem "Schnupperkurs + Modul"-Paar gehört: Ein Titel,
 // der mit "Schnupperkurs " beginnt, wird mit einem Anlass ohne dieses Präfix abgeglichen (z. B.
 // "Schnupperkurs Modul F" ↔ "Modul F"). Gibt es einen anderen Anlass mit genau diesem
-// Gegenstück-Titel, gehören beide zum selben Modul – das Material landet dann verschachtelt
-// unter {Modultitel}/{Modul|Schnupperkurs}/{Termin} statt als getrennte Ordner auf gleicher
-// Ebene. Sucht bewusst über eine übergebene, ungefilterte Liste (aktive + archivierte Anlässe),
-// damit ein aktiver Filter das Gegenstück nicht "unsichtbar" macht.
+// Gegenstück-Titel, gehören beide zum selben Modul. Gibt bei Treffer beide Anlässe zurück
+// (nicht nur den gefundenen Namen), weil sharepointRelativePath für beide Ordnerebenen jeweils
+// den EIGENEN Termin des betroffenen Anlasses braucht (Schnupperkurs und Weiterbildung finden
+// nicht zwangsläufig am selben Tag statt). Sucht bewusst über eine übergebene, ungefilterte
+// Liste (aktive + archivierte Anlässe), damit ein aktiver Filter das Gegenstück nicht
+// "unsichtbar" macht.
 const SCHNUPPERKURS_PREFIX = 'Schnupperkurs ';
-const findModuleGrouping = (item: any, allItems: any[]): { moduleTitle: string; subfolder: 'Modul' | 'Schnupperkurs' } | null => {
+const findModulePair = (item: any, allItems: any[]): { moduleItem: any; schnupperkursItem: any } | null => {
+  let moduleItem: any;
+  let schnupperkursItem: any;
   if (item.title.startsWith(SCHNUPPERKURS_PREFIX)) {
     const moduleTitle = item.title.slice(SCHNUPPERKURS_PREFIX.length).trim();
-    const hasModule = allItems.some((entry) => entry.id !== item.id && entry.title === moduleTitle);
-    return hasModule ? { moduleTitle, subfolder: 'Schnupperkurs' } : null;
+    moduleItem = allItems.find((entry) => entry.id !== item.id && entry.title === moduleTitle);
+    schnupperkursItem = item;
+  } else {
+    schnupperkursItem = allItems.find((entry) => entry.id !== item.id && entry.title === `${SCHNUPPERKURS_PREFIX}${item.title}`);
+    moduleItem = item;
   }
-  const hasSchnupperkurs = allItems.some((entry) => entry.id !== item.id && entry.title === `${SCHNUPPERKURS_PREFIX}${item.title}`);
-  return hasSchnupperkurs ? { moduleTitle: item.title, subfolder: 'Modul' } : null;
+  return moduleItem && schnupperkursItem ? { moduleItem, schnupperkursItem } : null;
 };
 
-// Baut die relative Ordner-Pfadkette unterhalb des Kategorie-Ordners: verschachtelt bei
-// erkanntem Modul-Paar (siehe findModuleGrouping), sonst flach wie bisher.
+// Baut die relative Ordner-Pfadkette unterhalb des Kategorie-Ordners. Bei erkanntem
+// Schnupperkurs/Modul-Paar zwei Ebenen: {Termin-der-Weiterbildung}_{Modultitel} als
+// Oberordner (immer dasselbe Datum, egal ob vom Schnupperkurs- oder Modul-Anlass aus geöffnet
+// – so landen beide zuverlässig im selben Oberordner) und darunter je nach Anlass entweder
+// {eigener Termin}_Schnupperkurs oder {eigener Termin}_Weiterbildung. Ohne erkanntes Paar
+// bleibt es bei der bisherigen flachen Struktur "Titel – Termin".
 const sharepointRelativePath = (item: any, allItems: any[]): string[] => {
+  const pair = findModulePair(item, allItems);
+  if (pair) {
+    const modulePrefix = sharepointDatePrefix(pair.moduleItem);
+    const topFolder = modulePrefix ? `${modulePrefix}_${pair.moduleItem.title}` : pair.moduleItem.title;
+    const isSchnupperkurs = item.id === pair.schnupperkursItem.id;
+    const ownPrefix = sharepointDatePrefix(isSchnupperkurs ? pair.schnupperkursItem : pair.moduleItem);
+    const subfolder = isSchnupperkurs ? 'Schnupperkurs' : 'Weiterbildung';
+    return [topFolder, ownPrefix ? `${ownPrefix}_${subfolder}` : subfolder];
+  }
   const dateLabel = sharepointDateLabel(item);
-  const grouping = findModuleGrouping(item, allItems);
-  if (grouping) return dateLabel ? [grouping.moduleTitle, grouping.subfolder, dateLabel] : [grouping.moduleTitle, grouping.subfolder];
   return [dateLabel ? `${item.title} – ${dateLabel}` : item.title];
 };
 const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TODAY ? 'Heute' : date <= addDays(TODAY, 6) ? 'Diese Woche' : 'Später';
