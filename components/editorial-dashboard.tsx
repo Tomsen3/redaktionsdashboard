@@ -88,17 +88,9 @@ const sharepointCategoryFolderUrl = (category: string) => {
   const path = `${SHAREPOINT_MATERIAL_ROOT}/${folderName}`;
   return `https://singendekrankenhaeuser.sharepoint.com/sites/SingendekrankenhuserHomepage/Freigegebene%20Dokumente/Forms/AllItems.aspx?id=${encodeURIComponent(path)}`;
 };
-// Ordnername nach der vereinbarten Konvention "Titel – TT.MM.JJJJ" (Anlässe wie "Modul E"
-// wiederholen sich über die Zeit, deshalb gehört der Termin fest zum Ordnernamen dazu). Gilt
-// nur für Anlässe OHNE erkanntes Schnupperkurs/Modul-Paar (siehe findModulePair) – bei
-// erkanntem Paar gilt stattdessen das Datumspräfix-Format unten.
-const sharepointDateLabel = (item: any) => {
-  const date = keyDateFor(item);
-  return date ? new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(`${date}T12:00:00`)) : '';
-};
-// Datumspräfix "JJJJ_MM_TT" für die Modul/Schnupperkurs-Ordnerstruktur (siehe unten) – anders
-// formatiert als sharepointDateLabel, weil es hier VOR den Ordnernamen gesetzt wird statt
-// dahinter angehängt zu werden.
+// Datumspräfix "JJJJ_MM_TT" für die Ordner-Namenskonvention – wird sowohl bei der Modul/
+// Schnupperkurs-Struktur (siehe unten) als auch bei alleinstehenden Anlässen (kein erkanntes
+// Paar, z. B. "Modul E" oder Mitgliederangebote) einheitlich VOR den Titel gesetzt.
 const sharepointDatePrefix = (item: any) => (keyDateFor(item) ?? '').replaceAll('-', '_');
 
 // Erkennt automatisch, ob ein Anlass zu einem "Schnupperkurs + Modul"-Paar gehört: Ein Titel,
@@ -141,8 +133,8 @@ const sharepointRelativePath = (item: any, allItems: any[]): string[] => {
     const subfolder = isSchnupperkurs ? 'Schnupperkurs' : 'Weiterbildung';
     return [topFolder, ownPrefix ? `${ownPrefix}_${subfolder}` : subfolder];
   }
-  const dateLabel = sharepointDateLabel(item);
-  return [dateLabel ? `${item.title} – ${dateLabel}` : item.title];
+  const dateLabel = sharepointDatePrefix(item);
+  return [dateLabel ? `${dateLabel}_${item.title}` : item.title];
 };
 const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TODAY ? 'Heute' : date <= addDays(TODAY, 6) ? 'Diese Woche' : 'Später';
 
