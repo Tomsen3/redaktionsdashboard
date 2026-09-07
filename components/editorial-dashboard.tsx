@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import {
   Archive, BarChart3, Bell, CalendarDays, Check, ChevronRight, CircleUserRound,
-  ClipboardCheck, Clock3, ExternalLink, FileImage, Filter, FolderPlus, Grid2X2, ImageIcon, LayoutList,
+  ClipboardCheck, Clock3, Copy, ExternalLink, FileImage, Filter, FolderPlus, Grid2X2, ImageIcon, LayoutList,
   Link2, MapPin, PackageCheck, Pencil, Plus, RotateCcw, Send, Sparkles, Trash2, Users, X,
 } from 'lucide-react';
 import type { CSSProperties } from 'react';
@@ -524,27 +524,15 @@ export function EditorialDashboard() {
 
   const [openItemId, setOpenItemId] = useState<string | null>(null);
 
-  // "Ordner vorbereiten": kopiert den vereinbarten Ordnernamen ("Titel – Termin") in die
-  // Zwischenablage und öffnet den passenden Kategorie-Unterordner in SharePoint in einem neuen
-  // Tab – dort reicht dann "Neuer Ordner" → einfügen. Funktioniert für jeden Anlass, egal ob
-  // gerade erst angelegt oder schon länger bestehend, weil nichts davon in der DB gespeichert
-  // werden muss (keine neue Migration nötig). copiedFolderFor steuert nur die kurze visuelle
-  // Bestätigung ("Kopiert!") am geklickten Button, egal in welcher Ansicht er sitzt.
-  const [copiedFolderFor, setCopiedFolderFor] = useState<string | null>(null);
-
-  const prepareSharePointFolder = useCallback((item: any) => {
-    const segments = sharepointRelativePath(item, [...items, ...archivedItems]);
-    const clipboardText = segments.join(' / ');
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(clipboardText).catch(() => {});
-    }
+  // Öffnet den passenden Kategorie-Unterordner in SharePoint in einem neuen Tab. Kopiert
+  // bewusst NICHTS mehr pauschal in die Zwischenablage (frühere Version) – bei mehrstufigen
+  // Pfaden (Modul/Schnupperkurs-Gruppierung, siehe sharepointRelativePath) lässt sich ein
+  // zusammengefügter Pfad nicht sinnvoll in SharePoints "Neuer Ordner"-Dialog einfügen. Das
+  // Kopieren einzelner Ebenen übernehmen stattdessen die Chips im Detaildialog (copySegment).
+  const openSharePointFolder = useCallback((item: any) => {
     const url = sharepointCategoryFolderUrl(item.category);
     if (url && typeof window !== 'undefined') window.open(url, '_blank', 'noopener');
-    setCopiedFolderFor(item.id);
-    if (typeof window !== 'undefined') {
-      window.setTimeout(() => setCopiedFolderFor((current) => (current === item.id ? null : current)), 2500);
-    }
-  }, [items, archivedItems]);
+  }, []);
   const openItem = items.find((item) => item.id === openItemId) ?? null;
   const detailPosts = posts.filter((post) => post.editorialItemId === openItemId).sort((a, b) => a.plannedDate.localeCompare(b.plannedDate));
   const detailTasks = tasks.filter((task) => task.editorialItemId === openItemId).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
@@ -1064,7 +1052,7 @@ export function EditorialDashboard() {
           {view !== 'Übersicht' && view !== 'Formate & Regeln' && view !== 'Archiv' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} itemOptions={itemOptions} view={view} />}
 
           {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} onCreateItem={startCreatingItem} />}
-          {view === 'Redaktionsanlässe' && <EditorialItemsView items={visibleItems} tasks={tasks} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onViewTasksForItem={viewTasksForItem} onArchiveItem={archiveItem} onPrepareFolder={prepareSharePointFolder} copiedFolderFor={copiedFolderFor} />}
+          {view === 'Redaktionsanlässe' && <EditorialItemsView items={visibleItems} tasks={tasks} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onViewTasksForItem={viewTasksForItem} onArchiveItem={archiveItem} onOpenFolder={openSharePointFolder} />}
           {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onDeletePost={deletePost} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
           {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} onCreate={startCreatingTask} />}
@@ -1076,7 +1064,7 @@ export function EditorialDashboard() {
         <TaskEditDialog items={items} editing={editingTask} creating={creatingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} onDelete={deleteTask} />
         <PostMoveDialog items={items} moving={movingPost} date={moveDate} setDate={setMoveDate} onSave={saveMovePost} onCancel={cancelMovePost} />
         <MaterialEditDialog items={items} posts={posts} open={creatingMaterial} draft={materialDraft} setDraft={setMaterialDraft} onSave={saveMaterialCreate} onCancel={cancelCreatingMaterial} />
-        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onDeletePost={deletePost} onArchiveItem={archiveItem} onCreateMaterial={startCreatingMaterial} onPrepareFolder={prepareSharePointFolder} copiedFolderFor={copiedFolderFor} folderPathLabel={openItem ? sharepointRelativePath(openItem, [...items, ...archivedItems]).join(' / ') : ''} onItemUpdated={applyItemUpdate} />
+        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onDeletePost={deletePost} onArchiveItem={archiveItem} onCreateMaterial={startCreatingMaterial} onPrepareFolder={openSharePointFolder} folderPathSegments={openItem ? sharepointRelativePath(openItem, [...items, ...archivedItems]) : []} onItemUpdated={applyItemUpdate} />
         <ItemDetailDialog
           item={openArchivedItem}
           posts={archivedDetailPosts}
@@ -1089,9 +1077,8 @@ export function EditorialDashboard() {
           onDeletePost={() => {}}
           onReactivate={reactivateItem}
           onHardDelete={hardDeleteItem}
-          onPrepareFolder={prepareSharePointFolder}
-          copiedFolderFor={copiedFolderFor}
-          folderPathLabel={openArchivedItem ? sharepointRelativePath(openArchivedItem, [...items, ...archivedItems]).join(' / ') : ''}
+          onPrepareFolder={openSharePointFolder}
+          folderPathSegments={openArchivedItem ? sharepointRelativePath(openArchivedItem, [...items, ...archivedItems]) : []}
           onItemUpdated={() => {}}
         />
         <QuickLinkEditDialog editing={editingLink} draft={linkDraft} setDraft={setLinkDraft} onSave={saveLinkEdit} onCancel={cancelLinkEdit} />
@@ -1186,7 +1173,7 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
 // plan-card), damit sich am Design nichts ändert. Klick auf die Zeile öffnet wie gewohnt die
 // Anlass-Detailansicht; der separate "Aufgaben"-Button springt direkt in die Aufgaben-Ansicht,
 // gefiltert auf genau diesen Anlass.
-function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTasksForItem, onArchiveItem, onPrepareFolder, copiedFolderFor }: { items: any[]; tasks: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void; onViewTasksForItem: (itemId: string) => void; onArchiveItem: (itemId: string) => void; onPrepareFolder: (item: any) => void; copiedFolderFor: string | null }) {
+function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTasksForItem, onArchiveItem, onOpenFolder }: { items: any[]; tasks: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void; onViewTasksForItem: (itemId: string) => void; onArchiveItem: (itemId: string) => void; onOpenFolder: (item: any) => void }) {
   const sorted = [...items].sort((a, b) => (keyDateFor(a) || '9999-12-31').localeCompare(keyDateFor(b) || '9999-12-31'));
   const openRow = (event: any, itemId: string) => { if (event.key && event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault?.(); onOpenItem(itemId); };
   const statsFor = (itemId: string) => {
@@ -1194,8 +1181,8 @@ function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTask
     return { total: itemTasks.length, done: itemTasks.filter((task) => task.status === 'erledigt').length };
   };
   return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Anlässe im Überblick</p><h1>Redaktionsanlässe</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Badge variant="outline">{sorted.length} Anlässe</Badge><Button size="sm" onClick={onCreateItem}><Plus /> Neuer Redaktionsanlass</Button></div></div>
-    <div className="desktop-table"><table><thead><tr><th>Termin/Ziel</th><th>Anlass</th><th>Fortschritt</th><th>Verantwortung</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <tr key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{date ? formatDate(date) : '—'}</strong></td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong>{item.subtitle && <small style={{ display: 'block' }}>{item.subtitle}</small>}<small>{item.format}</small></td><td>{total ? <Badge variant="outline" style={progressPillStyle(done, total)}>{done}/{total} erledigt</Badge> : <small>keine Aufgaben</small>}</td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }}>Aufgaben <ChevronRight size={14} /></Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onPrepareFolder(item); }} aria-label={`${item.title}: SharePoint-Ordner vorbereiten`} title="Ordnername kopieren & SharePoint-Ordner öffnen">{copiedFolderFor === item.id ? <Check size={15} /> : <FolderPlus size={15} />}</Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} aria-label={`${item.title}: Ins Archiv verschieben`}><Archive size={15} /></Button></td></tr>; })}</tbody></table></div>
-    <div className="mobile-cards">{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <article className="plan-card" key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{date && ` · ${formatDate(date)}`}</span><h3>{item.title}</h3>{item.subtitle && <small style={{ display: 'block' }}>{item.subtitle}</small>}</div>{total ? <Badge variant="outline" style={progressPillStyle(done, total)}>{done}/{total}</Badge> : <small>keine Aufgaben</small>}<div className="plan-card-row"><strong>{date ? fullDate(date) : 'kein Termin'}</strong><span>{item.contentOwner} → {item.publishOwner}</span></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>Aufgaben <ChevronRight size={12} /></button><button type="button" onClick={(event) => { event.stopPropagation(); onPrepareFolder(item); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>{copiedFolderFor === item.id ? <><Check size={12} /> Kopiert!</> : <><FolderPlus size={12} /> Ordner vorbereiten</>}</button><button type="button" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Archive size={12} /> Ins Archiv verschieben</button></div></article>; })}</div>
+    <div className="desktop-table"><table><thead><tr><th>Termin/Ziel</th><th>Anlass</th><th>Fortschritt</th><th>Verantwortung</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <tr key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{date ? formatDate(date) : '—'}</strong></td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong>{item.subtitle && <small style={{ display: 'block' }}>{item.subtitle}</small>}<small>{item.format}</small></td><td>{total ? <Badge variant="outline" style={progressPillStyle(done, total)}>{done}/{total} erledigt</Badge> : <small>keine Aufgaben</small>}</td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }}>Aufgaben <ChevronRight size={14} /></Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onOpenFolder(item); }} aria-label={`${item.title}: SharePoint-Ordner öffnen`} title="Passenden Kategorie-Ordner in SharePoint öffnen"><FolderPlus size={15} /></Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} aria-label={`${item.title}: Ins Archiv verschieben`}><Archive size={15} /></Button></td></tr>; })}</tbody></table></div>
+    <div className="mobile-cards">{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <article className="plan-card" key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{date && ` · ${formatDate(date)}`}</span><h3>{item.title}</h3>{item.subtitle && <small style={{ display: 'block' }}>{item.subtitle}</small>}</div>{total ? <Badge variant="outline" style={progressPillStyle(done, total)}>{done}/{total}</Badge> : <small>keine Aufgaben</small>}<div className="plan-card-row"><strong>{date ? fullDate(date) : 'kein Termin'}</strong><span>{item.contentOwner} → {item.publishOwner}</span></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>Aufgaben <ChevronRight size={12} /></button><button type="button" onClick={(event) => { event.stopPropagation(); onOpenFolder(item); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><FolderPlus size={12} /> SharePoint-Ordner öffnen</button><button type="button" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Archive size={12} /> Ins Archiv verschieben</button></div></article>; })}</div>
     {!sorted.length && <div className="empty-state"><PackageCheck /><h3>Keine Redaktionsanlässe</h3><p>Für diese Filterkombination gibt es aktuell keine Anlässe.</p></div>}
   </section>;
 }
@@ -1270,12 +1257,24 @@ function CalendarView({ items, posts, onMovePost }: { items: any[]; posts: any[]
 // (TaskEditDialog / PostMoveDialog) obendrüber, statt eigene Bearbeitungslogik
 // zu duplizieren. Da diese Ansicht neu ist, gibt es dafür noch keine eigenen
 // CSS-Klassen im Stylesheet — Layout daher wie bei AuthGate per Inline-Style.
-function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, onEditTask, onMovePost, onDeletePost, onArchiveItem, onReactivate, onHardDelete, onCreateMaterial, onPrepareFolder, copiedFolderFor, folderPathLabel, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; archived?: boolean; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onDeletePost: (id: string) => void; onArchiveItem?: (id: string) => void; onReactivate?: (item: any) => void; onHardDelete?: (id: string) => void; onCreateMaterial?: (itemId: string) => void; onPrepareFolder?: (item: any) => void; copiedFolderFor?: string | null; folderPathLabel?: string; onItemUpdated: (item: any) => void }) {
+function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, onEditTask, onMovePost, onDeletePost, onArchiveItem, onReactivate, onHardDelete, onCreateMaterial, onPrepareFolder, folderPathSegments, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; archived?: boolean; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onDeletePost: (id: string) => void; onArchiveItem?: (id: string) => void; onReactivate?: (item: any) => void; onHardDelete?: (id: string) => void; onCreateMaterial?: (itemId: string) => void; onPrepareFolder?: (item: any) => void; folderPathSegments?: string[]; onItemUpdated: (item: any) => void }) {
   const row: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 2fr 1fr auto', gap: 12, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border, #e5e5e5)', textAlign: 'left', width: '100%', background: 'none', border: 'none', borderBottomWidth: 1, borderBottomStyle: 'solid' };
   const sectionHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, margin: '20px 0 8px', fontSize: 14, fontWeight: 600 };
   const empty: CSSProperties = { fontSize: 13, opacity: 0.7, padding: '4px 0' };
 
   const [editingDetails, setEditingDetails] = useState(false);
+  // Kurze visuelle Bestätigung ("✓") am jeweils geklickten Ordner-Ebenen-Chip – rein lokal,
+  // weil das Kopieren einer einzelnen Ebene keinen Zustand außerhalb des Dialogs betrifft.
+  const [copiedSegment, setCopiedSegment] = useState<string | null>(null);
+  const copySegment = (segment: string) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(segment).catch(() => {});
+    }
+    setCopiedSegment(segment);
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => setCopiedSegment((current) => (current === segment ? null : current)), 2000);
+    }
+  };
   const [detailDraft, setDetailDraft] = useState<any>(null);
   const [savingDetails, setSavingDetails] = useState(false);
 
@@ -1378,12 +1377,32 @@ function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, on
             {!archived && <Button variant="ghost" size="sm" onClick={() => onCreateMaterial?.(item.id)}><Plus size={14} /> Material</Button>}
           </div>
           {item && (
-            <p style={{ ...empty, margin: '0 0 8px', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              Empfohlener SharePoint-Ordner: {item.category}{folderPathLabel ? ` / ${folderPathLabel}` : ''}
-              <Button variant="outline" size="sm" onClick={() => onPrepareFolder?.(item)}>
-                {copiedFolderFor === item.id ? <><Check size={13} /> Kopiert!</> : <><FolderPlus size={13} /> Ordner vorbereiten</>}
-              </Button>
-            </p>
+            <div style={{ margin: '0 0 10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 6 }}>
+                <span style={empty}>Empfohlener SharePoint-Ordner:</span>
+                <Button variant="outline" size="sm" onClick={() => onPrepareFolder?.(item)}><FolderPlus size={13} /> In SharePoint öffnen</Button>
+              </div>
+              {/* Jede Ordner-Ebene einzeln kopierbar, statt ein einzelner zusammengefügter Text:
+                  Beim Anlegen mehrerer neuer Unterordner nacheinander (z. B. "Modul F" → "Schnupperkurs"
+                  → "06.11.2026") braucht man pro Ebene genau den einen Namen, nicht den ganzen Pfad
+                  auf einmal – der ließe sich in SharePoints "Neuer Ordner"-Dialog nicht sinnvoll einfügen. */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap', fontSize: 13 }}>
+                <span style={{ color: 'var(--muted-foreground, #6b7280)' }}>{item.category}</span>
+                {(folderPathSegments ?? []).map((segment) => (
+                  <span key={segment} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <span style={{ color: 'var(--muted-foreground, #6b7280)' }}>/</span>
+                    <button
+                      type="button"
+                      onClick={() => copySegment(segment)}
+                      title="Diesen Ordnernamen kopieren"
+                      style={{ display: 'flex', alignItems: 'center', gap: 4, border: '1px solid var(--border, #e5e7eb)', borderRadius: 6, padding: '2px 8px', background: 'none', cursor: 'pointer', fontSize: 13 }}
+                    >
+                      {copiedSegment === segment ? <Check size={12} /> : <Copy size={12} />} {segment}
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
           )}
           {materials.length ? materials.map((material) => (
             <div style={row} key={material.id}>
