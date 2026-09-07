@@ -90,11 +90,36 @@ const sharepointCategoryFolderUrl = (category: string) => {
 };
 // Ordnername nach der vereinbarten Konvention "Titel – TT.MM.JJJJ" (Anlässe wie "Modul E"
 // wiederholen sich über die Zeit, deshalb gehört der Termin fest zum Ordnernamen dazu).
-const sharepointFolderName = (item: any) => {
+const sharepointDateLabel = (item: any) => {
   const date = keyDateFor(item);
-  if (!date) return item.title;
-  const dateLabel = new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(`${date}T12:00:00`));
-  return `${item.title} – ${dateLabel}`;
+  return date ? new Intl.DateTimeFormat('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(new Date(`${date}T12:00:00`)) : '';
+};
+
+// Erkennt automatisch, ob ein Anlass zu einem "Schnupperkurs + Modul"-Paar gehört: Ein Titel,
+// der mit "Schnupperkurs " beginnt, wird mit einem Anlass ohne dieses Präfix abgeglichen (z. B.
+// "Schnupperkurs Modul F" ↔ "Modul F"). Gibt es einen anderen Anlass mit genau diesem
+// Gegenstück-Titel, gehören beide zum selben Modul – das Material landet dann verschachtelt
+// unter {Modultitel}/{Modul|Schnupperkurs}/{Termin} statt als getrennte Ordner auf gleicher
+// Ebene. Sucht bewusst über eine übergebene, ungefilterte Liste (aktive + archivierte Anlässe),
+// damit ein aktiver Filter das Gegenstück nicht "unsichtbar" macht.
+const SCHNUPPERKURS_PREFIX = 'Schnupperkurs ';
+const findModuleGrouping = (item: any, allItems: any[]): { moduleTitle: string; subfolder: 'Modul' | 'Schnupperkurs' } | null => {
+  if (item.title.startsWith(SCHNUPPERKURS_PREFIX)) {
+    const moduleTitle = item.title.slice(SCHNUPPERKURS_PREFIX.length).trim();
+    const hasModule = allItems.some((entry) => entry.id !== item.id && entry.title === moduleTitle);
+    return hasModule ? { moduleTitle, subfolder: 'Schnupperkurs' } : null;
+  }
+  const hasSchnupperkurs = allItems.some((entry) => entry.id !== item.id && entry.title === `${SCHNUPPERKURS_PREFIX}${item.title}`);
+  return hasSchnupperkurs ? { moduleTitle: item.title, subfolder: 'Modul' } : null;
+};
+
+// Baut die relative Ordner-Pfadkette unterhalb des Kategorie-Ordners: verschachtelt bei
+// erkanntem Modul-Paar (siehe findModuleGrouping), sonst flach wie bisher.
+const sharepointRelativePath = (item: any, allItems: any[]): string[] => {
+  const dateLabel = sharepointDateLabel(item);
+  const grouping = findModuleGrouping(item, allItems);
+  if (grouping) return dateLabel ? [grouping.moduleTitle, grouping.subfolder, dateLabel] : [grouping.moduleTitle, grouping.subfolder];
+  return [dateLabel ? `${item.title} – ${dateLabel}` : item.title];
 };
 const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TODAY ? 'Heute' : date <= addDays(TODAY, 6) ? 'Diese Woche' : 'Später';
 // Grob gerasterter Zeitraum für den Archiv-Filter, bezogen auf das Archivierungsdatum
@@ -508,9 +533,10 @@ export function EditorialDashboard() {
   const [copiedFolderFor, setCopiedFolderFor] = useState<string | null>(null);
 
   const prepareSharePointFolder = useCallback((item: any) => {
-    const folderName = sharepointFolderName(item);
+    const segments = sharepointRelativePath(item, [...items, ...archivedItems]);
+    const clipboardText = segments.join(' / ');
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(folderName).catch(() => {});
+      navigator.clipboard.writeText(clipboardText).catch(() => {});
     }
     const url = sharepointCategoryFolderUrl(item.category);
     if (url && typeof window !== 'undefined') window.open(url, '_blank', 'noopener');
@@ -518,7 +544,7 @@ export function EditorialDashboard() {
     if (typeof window !== 'undefined') {
       window.setTimeout(() => setCopiedFolderFor((current) => (current === item.id ? null : current)), 2500);
     }
-  }, []);
+  }, [items, archivedItems]);
   const openItem = items.find((item) => item.id === openItemId) ?? null;
   const detailPosts = posts.filter((post) => post.editorialItemId === openItemId).sort((a, b) => a.plannedDate.localeCompare(b.plannedDate));
   const detailTasks = tasks.filter((task) => task.editorialItemId === openItemId).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
@@ -1050,7 +1076,7 @@ export function EditorialDashboard() {
         <TaskEditDialog items={items} editing={editingTask} creating={creatingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} onDelete={deleteTask} />
         <PostMoveDialog items={items} moving={movingPost} date={moveDate} setDate={setMoveDate} onSave={saveMovePost} onCancel={cancelMovePost} />
         <MaterialEditDialog items={items} posts={posts} open={creatingMaterial} draft={materialDraft} setDraft={setMaterialDraft} onSave={saveMaterialCreate} onCancel={cancelCreatingMaterial} />
-        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onDeletePost={deletePost} onArchiveItem={archiveItem} onCreateMaterial={startCreatingMaterial} onPrepareFolder={prepareSharePointFolder} copiedFolderFor={copiedFolderFor} onItemUpdated={applyItemUpdate} />
+        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onDeletePost={deletePost} onArchiveItem={archiveItem} onCreateMaterial={startCreatingMaterial} onPrepareFolder={prepareSharePointFolder} copiedFolderFor={copiedFolderFor} folderPathLabel={openItem ? sharepointRelativePath(openItem, [...items, ...archivedItems]).join(' / ') : ''} onItemUpdated={applyItemUpdate} />
         <ItemDetailDialog
           item={openArchivedItem}
           posts={archivedDetailPosts}
@@ -1065,6 +1091,7 @@ export function EditorialDashboard() {
           onHardDelete={hardDeleteItem}
           onPrepareFolder={prepareSharePointFolder}
           copiedFolderFor={copiedFolderFor}
+          folderPathLabel={openArchivedItem ? sharepointRelativePath(openArchivedItem, [...items, ...archivedItems]).join(' / ') : ''}
           onItemUpdated={() => {}}
         />
         <QuickLinkEditDialog editing={editingLink} draft={linkDraft} setDraft={setLinkDraft} onSave={saveLinkEdit} onCancel={cancelLinkEdit} />
@@ -1243,7 +1270,7 @@ function CalendarView({ items, posts, onMovePost }: { items: any[]; posts: any[]
 // (TaskEditDialog / PostMoveDialog) obendrüber, statt eigene Bearbeitungslogik
 // zu duplizieren. Da diese Ansicht neu ist, gibt es dafür noch keine eigenen
 // CSS-Klassen im Stylesheet — Layout daher wie bei AuthGate per Inline-Style.
-function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, onEditTask, onMovePost, onDeletePost, onArchiveItem, onReactivate, onHardDelete, onCreateMaterial, onPrepareFolder, copiedFolderFor, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; archived?: boolean; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onDeletePost: (id: string) => void; onArchiveItem?: (id: string) => void; onReactivate?: (item: any) => void; onHardDelete?: (id: string) => void; onCreateMaterial?: (itemId: string) => void; onPrepareFolder?: (item: any) => void; copiedFolderFor?: string | null; onItemUpdated: (item: any) => void }) {
+function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, onEditTask, onMovePost, onDeletePost, onArchiveItem, onReactivate, onHardDelete, onCreateMaterial, onPrepareFolder, copiedFolderFor, folderPathLabel, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; archived?: boolean; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onDeletePost: (id: string) => void; onArchiveItem?: (id: string) => void; onReactivate?: (item: any) => void; onHardDelete?: (id: string) => void; onCreateMaterial?: (itemId: string) => void; onPrepareFolder?: (item: any) => void; copiedFolderFor?: string | null; folderPathLabel?: string; onItemUpdated: (item: any) => void }) {
   const row: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 2fr 1fr auto', gap: 12, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border, #e5e5e5)', textAlign: 'left', width: '100%', background: 'none', border: 'none', borderBottomWidth: 1, borderBottomStyle: 'solid' };
   const sectionHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, margin: '20px 0 8px', fontSize: 14, fontWeight: 600 };
   const empty: CSSProperties = { fontSize: 13, opacity: 0.7, padding: '4px 0' };
@@ -1352,7 +1379,7 @@ function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, on
           </div>
           {item && (
             <p style={{ ...empty, margin: '0 0 8px', display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              Empfohlener SharePoint-Ordner: {item.category}
+              Empfohlener SharePoint-Ordner: {item.category}{folderPathLabel ? ` / ${folderPathLabel}` : ''}
               <Button variant="outline" size="sm" onClick={() => onPrepareFolder?.(item)}>
                 {copiedFolderFor === item.id ? <><Check size={13} /> Kopiert!</> : <><FolderPlus size={13} /> Ordner vorbereiten</>}
               </Button>
