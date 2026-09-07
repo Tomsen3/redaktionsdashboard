@@ -82,12 +82,6 @@ const CATEGORY_FOLDER_NAMES: Record<string, string> = {
   'Redaktionelle Formate': 'Redaktionelle Formate',
   'Rückblick/Zertifizierung': 'Rückblick-Zertifizierung',
 };
-const sharepointCategoryFolderUrl = (category: string) => {
-  const folderName = CATEGORY_FOLDER_NAMES[category];
-  if (!folderName) return null;
-  const path = `${SHAREPOINT_MATERIAL_ROOT}/${folderName}`;
-  return `https://singendekrankenhaeuser.sharepoint.com/sites/SingendekrankenhuserHomepage/Freigegebene%20Dokumente/Forms/AllItems.aspx?id=${encodeURIComponent(path)}`;
-};
 // Datumspräfix "JJJJ_MM_TT" für die Ordner-Namenskonvention – wird sowohl bei der Modul/
 // Schnupperkurs-Struktur (siehe unten) als auch bei alleinstehenden Anlässen (kein erkanntes
 // Paar, z. B. "Modul E" oder Mitgliederangebote) einheitlich VOR den Titel gesetzt.
@@ -120,21 +114,46 @@ const findModulePair = (item: any, allItems: any[]): { moduleItem: any; schnuppe
 // Baut die relative Ordner-Pfadkette unterhalb des Kategorie-Ordners. Bei erkanntem
 // Schnupperkurs/Modul-Paar zwei Ebenen: {Termin-der-Weiterbildung}_{Modultitel} als
 // Oberordner (immer dasselbe Datum, egal ob vom Schnupperkurs- oder Modul-Anlass aus geöffnet
-// – so landen beide zuverlässig im selben Oberordner) und darunter je nach Anlass entweder
-// {eigener Termin}_Schnupperkurs oder {eigener Termin}_Weiterbildung. Ohne erkanntes Paar
-// bleibt es bei der bisherigen flachen Struktur "Titel – Termin".
+// – so landen beide zuverlässig im selben Oberordner) und darunter entweder schlicht "Modul"
+// (kein eigenes Datum – steht ja schon im Oberordner) oder {eigener Termin}_Schnupperkurs
+// (mit eigenem Datum, da der Schnupperkurstermin vom Modultermin abweichen kann). Ohne
+// erkanntes Paar bleibt es bei der flachen Struktur "{JJJJ_MM_TT}_Titel".
 const sharepointRelativePath = (item: any, allItems: any[]): string[] => {
   const pair = findModulePair(item, allItems);
   if (pair) {
     const modulePrefix = sharepointDatePrefix(pair.moduleItem);
     const topFolder = modulePrefix ? `${modulePrefix}_${pair.moduleItem.title}` : pair.moduleItem.title;
     const isSchnupperkurs = item.id === pair.schnupperkursItem.id;
-    const ownPrefix = sharepointDatePrefix(isSchnupperkurs ? pair.schnupperkursItem : pair.moduleItem);
-    const subfolder = isSchnupperkurs ? 'Schnupperkurs' : 'Weiterbildung';
-    return [topFolder, ownPrefix ? `${ownPrefix}_${subfolder}` : subfolder];
+    if (isSchnupperkurs) {
+      // Der Schnupperkurs bekommt sein EIGENES Datum als Präfix, weil es vom Modul-Termin im
+      // Oberordner abweichen kann.
+      const schnupperkursPrefix = sharepointDatePrefix(pair.schnupperkursItem);
+      return [topFolder, schnupperkursPrefix ? `${schnupperkursPrefix}_Schnupperkurs` : 'Schnupperkurs'];
+    }
+    // Die Weiterbildung selbst bekommt KEIN eigenes Datumspräfix mehr – das steht schon im
+    // Oberordner (derselbe Termin), ein zweites Mal wäre redundant.
+    return [topFolder, 'Modul'];
   }
   const dateLabel = sharepointDatePrefix(item);
   return [dateLabel ? `${dateLabel}_${item.title}` : item.title];
+};
+
+// Baut die URL für den "In SharePoint öffnen"-Button. Bei erkanntem Modul/Schnupperkurs-Paar
+// wird direkt bis zum Oberordner verlinkt (erstes Segment aus sharepointRelativePath), nicht
+// nur bis zum Kategorie-Ordner – spart einen Navigationsschritt, wenn man dort nur noch
+// "Modul" oder "Schnupperkurs" ergänzen will. Ohne erkanntes Paar bleibt es beim
+// Kategorie-Ordner, da es dort keinen verlässlich schon existierenden Zwischenordner gibt.
+// Wichtig: Die App kann NICHT prüfen, ob der Oberordner in SharePoint schon existiert (kein
+// Lesezugriff) – existiert er noch nicht, zeigt SharePoint vermutlich eine Fehlerseite statt
+// sauber zum Kategorie-Ordner zurückzuspringen.
+const sharepointOpenUrl = (item: any, allItems: any[]) => {
+  const folderName = CATEGORY_FOLDER_NAMES[item.category];
+  if (!folderName) return null;
+  const segments = sharepointRelativePath(item, allItems);
+  const pathParts = [SHAREPOINT_MATERIAL_ROOT, folderName];
+  if (segments.length > 1) pathParts.push(segments[0]);
+  const path = pathParts.join('/');
+  return `https://singendekrankenhaeuser.sharepoint.com/sites/SingendekrankenhuserHomepage/Freigegebene%20Dokumente/Forms/AllItems.aspx?id=${encodeURIComponent(path)}`;
 };
 const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TODAY ? 'Heute' : date <= addDays(TODAY, 6) ? 'Diese Woche' : 'Später';
 
@@ -573,9 +592,9 @@ export function EditorialDashboard() {
   // zusammengefügter Pfad nicht sinnvoll in SharePoints "Neuer Ordner"-Dialog einfügen. Das
   // Kopieren einzelner Ebenen übernehmen stattdessen die Chips im Detaildialog (copySegment).
   const openSharePointFolder = useCallback((item: any) => {
-    const url = sharepointCategoryFolderUrl(item.category);
+    const url = sharepointOpenUrl(item, [...items, ...archivedItems]);
     if (url && typeof window !== 'undefined') window.open(url, '_blank', 'noopener');
-  }, []);
+  }, [items, archivedItems]);
   const openItem = items.find((item) => item.id === openItemId) ?? null;
   const detailPosts = posts.filter((post) => post.editorialItemId === openItemId).sort((a, b) => a.plannedDate.localeCompare(b.plannedDate));
   const detailTasks = tasks.filter((task) => task.editorialItemId === openItemId).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
