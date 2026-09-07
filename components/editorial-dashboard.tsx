@@ -51,6 +51,22 @@ const fullDate = (value: string) => new Intl.DateTimeFormat('de-DE', { weekday: 
 const itemFor = (items: any[], id: string) => items.find((item) => item.id === id) ?? { title: '', format: '', category: '', people: [], publishOwner: '' };
 const statusLabel = (status: string) => ({ in_arbeit: 'in Arbeit', blockiert: 'blockiert', geplant: 'geplant', vorgesehen: 'vorgesehen', offen: 'offen', erledigt: 'erledigt' }[status] || status);
 const materialStatusLabel = (status: string) => ({ fehlt: 'fehlt', angefragt: 'angefragt', vorhanden: 'vorhanden', nicht_erforderlich: 'nicht erforderlich' }[status] || status);
+// Färbt den Fortschritts-Pill (erledigte/gesamt Aufgaben eines Anlasses) entlang eines
+// Grünverlaufs ein: wenig erledigt = dunkles Grün, viel erledigt = helles Grün. Die
+// Schriftfarbe wird über die wahrgenommene Helligkeit (YIQ-Formel) automatisch zwischen
+// Weiß und einem dunklen Grün gewählt, damit der Text bei jedem Mischton lesbar bleibt.
+const progressPillStyle = (done: number, total: number): CSSProperties => {
+  if (!total) return {};
+  const ratio = Math.max(0, Math.min(1, done / total));
+  const dark = { r: 27, g: 67, b: 50 }; // dunkles Tannengrün
+  const light = { r: 216, g: 243, b: 220 }; // helles Mintgrün
+  const mix = (from: number, to: number) => Math.round(from + (to - from) * ratio);
+  const r = mix(dark.r, light.r);
+  const g = mix(dark.g, light.g);
+  const b = mix(dark.b, light.b);
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  return { backgroundColor: `rgb(${r}, ${g}, ${b})`, borderColor: 'transparent', color: brightness > 150 ? '#1b4332' : '#ffffff' };
+};
 const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TODAY ? 'Heute' : date <= addDays(TODAY, 6) ? 'Diese Woche' : 'Später';
 // Grob gerasterter Zeitraum für den Archiv-Filter, bezogen auf das Archivierungsdatum
 // (nicht den ursprünglichen Veranstaltungstermin) – analog zu timeBucket, aber rückwärtsgewandt.
@@ -74,31 +90,48 @@ const keyDateFor = (item: any) => (
 // Ordnet UI-Feldnamen den Supabase-Spalten zu, damit updateTask generisch bleibt.
 const TASK_COLUMN: Record<string, string> = { title: 'title', owner: 'owner_name', dueDate: 'due_date', status: 'status', priority: 'priority', notes: 'notes', referenceUrl: 'reference_url' };
 
-function FilterBar({ filters, onChange, formatNames, itemOptions }: { filters: Filters; onChange: (filters: Filters) => void; formatNames: string[]; itemOptions: { id: string; title: string }[] }) {
-  const choices = {
+function FilterBar({ filters, onChange, formatNames, itemOptions, view }: { filters: Filters; onChange: (filters: Filters) => void; formatNames: string[]; itemOptions: { id: string; title: string }[]; view: View }) {
+  // Redaktionsanlässe selbst haben keinen eigenen Status (nur Postings/Aufgaben/Materialien
+  // haben einen) – der Status-Filter würde dort nie etwas ausblenden und wird deshalb gar
+  // nicht erst angezeigt. Materialien nutzen einen eigenen Status-Wertebereich (fehlt/
+  // angefragt/vorhanden/nicht_erforderlich) statt des Aufgaben-/Posting-Status – ohne diese
+  // Unterscheidung würde eine Auswahl dort immer eine leere Liste zeigen, weil die Werte nie
+  // zueinander passen.
+  const showStatus = view !== 'Redaktionsanlässe';
+  const isMaterialStatus = view === 'Materialien';
+  const statusChoices = isMaterialStatus ? ['Alle', 'fehlt', 'angefragt', 'vorhanden', 'nicht_erforderlich'] : ['Alle', 'offen', 'in_arbeit', 'geplant', 'blockiert', 'erledigt'];
+  const statusLabelFor = isMaterialStatus ? materialStatusLabel : statusLabel;
+  const choices: Record<string, string[]> = {
     person: ['Alle', 'Tom', 'Norbert'],
     time: ['Alle', 'Überfällig', 'Heute', 'Diese Woche', 'Später'],
-    status: ['Alle', 'offen', 'in_arbeit', 'geplant', 'blockiert', 'erledigt'],
+    ...(showStatus ? { status: statusChoices } : {}),
     format: ['Alle', ...formatNames],
   };
+  const filterLabels: Record<string, string> = { person: 'Person', time: 'Zeitraum', status: 'Status', format: 'Format' };
   return (
     <div className="filterbar" aria-label="Kombinierbare Filter">
       <div className="filter-title"><Filter size={16} /> Filter kombinieren</div>
-      {(Object.keys(choices) as (keyof typeof choices)[]).map((key) => (
-        <Select key={key} value={filters[key]} onValueChange={(value) => onChange({ ...filters, [key]: value as string })}>
-          <SelectTrigger aria-label={key} className={cn('filter-select', filters[key] !== 'Alle' && 'active')}><SelectValue>{statusLabel(filters[key])}</SelectValue></SelectTrigger>
-          <SelectContent>{choices[key].map((choice) => <SelectItem key={choice} value={choice}>{statusLabel(choice)}</SelectItem>)}</SelectContent>
-        </Select>
+      {Object.keys(choices).map((key) => (
+        <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <label htmlFor={`filter-${key}`} style={{ fontSize: 11, color: 'var(--muted-foreground, #6b7280)' }}>{filterLabels[key]}</label>
+          <Select value={filters[key as keyof Filters]} onValueChange={(value) => onChange({ ...filters, [key]: value as string })}>
+            <SelectTrigger id={`filter-${key}`} aria-label={filterLabels[key]} className={cn('filter-select', filters[key as keyof Filters] !== 'Alle' && 'active')}><SelectValue>{key === 'status' ? statusLabelFor(filters.status) : statusLabel(filters[key as keyof Filters])}</SelectValue></SelectTrigger>
+            <SelectContent>{choices[key].map((choice) => <SelectItem key={choice} value={choice}>{key === 'status' ? statusLabelFor(choice) : statusLabel(choice)}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
       ))}
       {/* Anlass-Filter: eigener Select, weil hier (anders als bei Format) die eindeutige id als
           Wert genutzt werden muss – Anlass-Titel sind nicht garantiert eindeutig. */}
-      <Select value={filters.item} onValueChange={(value) => onChange({ ...filters, item: value as string })}>
-        <SelectTrigger aria-label="item" className={cn('filter-select', filters.item !== 'Alle' && 'active')}><SelectValue>{filters.item === 'Alle' ? 'Alle Anlässe' : (itemOptions.find((option) => option.id === filters.item)?.title ?? 'Alle Anlässe')}</SelectValue></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="Alle">Alle Anlässe</SelectItem>
-          {itemOptions.map((option) => <SelectItem key={option.id} value={option.id}>{option.title}</SelectItem>)}
-        </SelectContent>
-      </Select>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <label htmlFor="filter-item" style={{ fontSize: 11, color: 'var(--muted-foreground, #6b7280)' }}>Anlass</label>
+        <Select value={filters.item} onValueChange={(value) => onChange({ ...filters, item: value as string })}>
+          <SelectTrigger id="filter-item" aria-label="Anlass" className={cn('filter-select', filters.item !== 'Alle' && 'active')}><SelectValue>{filters.item === 'Alle' ? 'Alle Anlässe' : (itemOptions.find((option) => option.id === filters.item)?.title ?? 'Alle Anlässe')}</SelectValue></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="Alle">Alle Anlässe</SelectItem>
+            {itemOptions.map((option) => <SelectItem key={option.id} value={option.id}>{option.title}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
       {Object.values(filters).some((value) => value !== 'Alle') && (
         <Button variant="ghost" size="sm" onClick={() => onChange({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle', item: 'Alle' })}>
           <X /> Zurücksetzen
@@ -167,6 +200,21 @@ export function EditorialDashboard() {
   const [postRules, setPostRules] = useState<any[]>([]);
   const [taskRules, setTaskRules] = useState<any[]>([]);
   const [filters, setFilters] = useState<Filters>({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle', item: 'Alle' });
+
+  // Materialien haben einen eigenen Status-Wertebereich (fehlt/angefragt/vorhanden/
+  // nicht_erforderlich) statt des Aufgaben-/Posting-Status (offen/in_arbeit/…). Wechselt man
+  // die Ansicht mit aktivem Status-Filter, würde der alte Wert sonst unbemerkt zu einer leeren
+  // Liste führen, weil er im neuen Wertebereich gar nicht vorkommt – hier wird er in dem Fall
+  // automatisch auf "Alle" zurückgesetzt.
+  useEffect(() => {
+    const materialStatuses = ['fehlt', 'angefragt', 'vorhanden', 'nicht_erforderlich'];
+    setFilters((current) => {
+      if (current.status === 'Alle') return current;
+      const isMaterialStatus = materialStatuses.includes(current.status);
+      const validForView = view === 'Materialien' ? isMaterialStatus : !isMaterialStatus;
+      return validForView ? current : { ...current, status: 'Alle' };
+    });
+  }, [view]);
 
   // Archiv: dieselben Datensätze wie oben, aber mit gesetztem archived_at. Getrennte States
   // statt eines gemeinsamen "alle Datensätze"-Arrays, damit die aktiven Ansichten (Übersicht,
@@ -937,7 +985,7 @@ export function EditorialDashboard() {
         </header>
 
         <div className="workspace">
-          {view !== 'Übersicht' && view !== 'Formate & Regeln' && view !== 'Archiv' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} itemOptions={itemOptions} />}
+          {view !== 'Übersicht' && view !== 'Formate & Regeln' && view !== 'Archiv' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} itemOptions={itemOptions} view={view} />}
 
           {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} onCreateItem={startCreatingItem} />}
           {view === 'Redaktionsanlässe' && <EditorialItemsView items={visibleItems} tasks={tasks} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onViewTasksForItem={viewTasksForItem} onArchiveItem={archiveItem} />}
@@ -1067,8 +1115,8 @@ function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTask
     return { total: itemTasks.length, done: itemTasks.filter((task) => task.status === 'erledigt').length };
   };
   return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Anlässe im Überblick</p><h1>Redaktionsanlässe</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Badge variant="outline">{sorted.length} Anlässe</Badge><Button size="sm" onClick={onCreateItem}><Plus /> Neuer Redaktionsanlass</Button></div></div>
-    <div className="desktop-table"><table><thead><tr><th>Termin/Ziel</th><th>Anlass</th><th>Fortschritt</th><th>Verantwortung</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <tr key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{date ? formatDate(date) : '—'}</strong></td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong>{item.subtitle && <small style={{ display: 'block' }}>{item.subtitle}</small>}<small>{item.format}</small></td><td>{total ? <Badge variant="outline">{done}/{total} erledigt</Badge> : <small>keine Aufgaben</small>}</td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }}>Aufgaben <ChevronRight size={14} /></Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} aria-label={`${item.title}: Ins Archiv verschieben`}><Archive size={15} /></Button></td></tr>; })}</tbody></table></div>
-    <div className="mobile-cards">{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <article className="plan-card" key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{date && ` · ${formatDate(date)}`}</span><h3>{item.title}</h3>{item.subtitle && <small style={{ display: 'block' }}>{item.subtitle}</small>}</div>{total ? <Badge variant="outline">{done}/{total}</Badge> : <small>keine Aufgaben</small>}<div className="plan-card-row"><strong>{date ? fullDate(date) : 'kein Termin'}</strong><span>{item.contentOwner} → {item.publishOwner}</span></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>Aufgaben <ChevronRight size={12} /></button><button type="button" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Archive size={12} /> Ins Archiv verschieben</button></div></article>; })}</div>
+    <div className="desktop-table"><table><thead><tr><th>Termin/Ziel</th><th>Anlass</th><th>Fortschritt</th><th>Verantwortung</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <tr key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{date ? formatDate(date) : '—'}</strong></td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong>{item.subtitle && <small style={{ display: 'block' }}>{item.subtitle}</small>}<small>{item.format}</small></td><td>{total ? <Badge variant="outline" style={progressPillStyle(done, total)}>{done}/{total} erledigt</Badge> : <small>keine Aufgaben</small>}</td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }}>Aufgaben <ChevronRight size={14} /></Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} aria-label={`${item.title}: Ins Archiv verschieben`}><Archive size={15} /></Button></td></tr>; })}</tbody></table></div>
+    <div className="mobile-cards">{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <article className="plan-card" key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{date && ` · ${formatDate(date)}`}</span><h3>{item.title}</h3>{item.subtitle && <small style={{ display: 'block' }}>{item.subtitle}</small>}</div>{total ? <Badge variant="outline" style={progressPillStyle(done, total)}>{done}/{total}</Badge> : <small>keine Aufgaben</small>}<div className="plan-card-row"><strong>{date ? fullDate(date) : 'kein Termin'}</strong><span>{item.contentOwner} → {item.publishOwner}</span></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>Aufgaben <ChevronRight size={12} /></button><button type="button" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Archive size={12} /> Ins Archiv verschieben</button></div></article>; })}</div>
     {!sorted.length && <div className="empty-state"><PackageCheck /><h3>Keine Redaktionsanlässe</h3><p>Für diese Filterkombination gibt es aktuell keine Anlässe.</p></div>}
   </section>;
 }
