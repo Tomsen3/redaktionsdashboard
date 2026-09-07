@@ -6,7 +6,7 @@ import type { Session } from '@supabase/supabase-js';
 import {
   Archive, BarChart3, Bell, CalendarDays, Check, ChevronRight, CircleUserRound,
   ClipboardCheck, Clock3, ExternalLink, FileImage, Filter, Grid2X2, ImageIcon, LayoutList,
-  Link2, MapPin, PackageCheck, Pencil, Plus, Send, Sparkles, Trash2, Users, X,
+  Link2, MapPin, PackageCheck, Pencil, Plus, RotateCcw, Send, Sparkles, Trash2, Users, X,
 } from 'lucide-react';
 import type { CSSProperties } from 'react';
 import {
@@ -26,11 +26,11 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
-import { addDays, generateSchedule, mondayOfWeek, movePost, postingDensity, reassignTask as validateReassign } from '@/lib/editorial-engine.mjs';
+import { addDays, generateSchedule, isItemComplete, mondayOfWeek, movePost, postingDensity, reassignTask as validateReassign } from '@/lib/editorial-engine.mjs';
 import { supabase } from '@/lib/supabase-client';
-import { mapFormat, mapItem, mapMaterial, mapPost, mapPostRule, mapQuickLink, mapTask, mapTaskRule } from '@/lib/data-mappers';
+import { mapFormat, mapFormatQuickLink, mapItem, mapMaterial, mapPost, mapPostRule, mapQuickLink, mapTask, mapTaskRule } from '@/lib/data-mappers';
 
-type View = 'Übersicht' | 'Redaktionsanlässe' | 'Redaktionsplan' | 'Kalender' | 'Aufgaben' | 'Materialien' | 'Formate & Regeln';
+type View = 'Übersicht' | 'Redaktionsanlässe' | 'Redaktionsplan' | 'Kalender' | 'Aufgaben' | 'Materialien' | 'Formate & Regeln' | 'Archiv';
 type Filters = { person: string; time: string; status: string; format: string; item: string };
 
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -51,6 +51,15 @@ const fullDate = (value: string) => new Intl.DateTimeFormat('de-DE', { weekday: 
 const itemFor = (items: any[], id: string) => items.find((item) => item.id === id) ?? { title: '', format: '', category: '', people: [], publishOwner: '' };
 const statusLabel = (status: string) => ({ in_arbeit: 'in Arbeit', blockiert: 'blockiert', geplant: 'geplant', vorgesehen: 'vorgesehen', offen: 'offen', erledigt: 'erledigt' }[status] || status);
 const timeBucket = (date: string) => date < TODAY ? 'Überfällig' : date === TODAY ? 'Heute' : date <= addDays(TODAY, 6) ? 'Diese Woche' : 'Später';
+// Grob gerasterter Zeitraum für den Archiv-Filter, bezogen auf das Archivierungsdatum
+// (nicht den ursprünglichen Veranstaltungstermin) – analog zu timeBucket, aber rückwärtsgewandt.
+const archivedPeriod = (value?: string) => {
+  if (!value) return 'Unbekannt';
+  const daysAgo = Math.floor((new Date(`${TODAY}T12:00:00`).getTime() - new Date(`${value.slice(0, 10)}T12:00:00`).getTime()) / 86400000);
+  if (daysAgo <= 30) return 'Letzte 30 Tage';
+  if (daysAgo <= 365) return 'Dieses Jahr';
+  return 'Älter';
+};
 // Ermittelt das für Sortierung/Filterung relevante "Leitdatum" eines Redaktionsanlasses:
 // Veranstaltungstermin bei Formaten mit Termin, sonst Ziel- bzw. Bezugsdatum. Spiegelt den
 // "anchor" aus generateSchedule() in editorial-engine.mjs, arbeitet aber auf den bereits
@@ -62,7 +71,7 @@ const keyDateFor = (item: any) => (
 ) || '';
 
 // Ordnet UI-Feldnamen den Supabase-Spalten zu, damit updateTask generisch bleibt.
-const TASK_COLUMN: Record<string, string> = { title: 'title', owner: 'owner_name', dueDate: 'due_date', status: 'status', priority: 'priority', notes: 'notes' };
+const TASK_COLUMN: Record<string, string> = { title: 'title', owner: 'owner_name', dueDate: 'due_date', status: 'status', priority: 'priority', notes: 'notes', referenceUrl: 'reference_url' };
 
 function FilterBar({ filters, onChange, formatNames, itemOptions }: { filters: Filters; onChange: (filters: Filters) => void; formatNames: string[]; itemOptions: { id: string; title: string }[] }) {
   const choices = {
@@ -150,12 +159,21 @@ export function EditorialDashboard() {
   const [tasks, setTasks] = useState<any[]>([]);
   const [materials, setMaterials] = useState<any[]>([]);
   const [quickLinks, setQuickLinks] = useState<any[]>([]);
+  const [formatQuickLinks, setFormatQuickLinks] = useState<any[]>([]);
   const [formats, setFormats] = useState<any[]>([]);
   const formatsRef = useRef<any[]>([]);
   useEffect(() => { formatsRef.current = formats; }, [formats]);
   const [postRules, setPostRules] = useState<any[]>([]);
   const [taskRules, setTaskRules] = useState<any[]>([]);
   const [filters, setFilters] = useState<Filters>({ person: 'Alle', time: 'Alle', status: 'Alle', format: 'Alle', item: 'Alle' });
+
+  // Archiv: dieselben Datensätze wie oben, aber mit gesetztem archived_at. Getrennte States
+  // statt eines gemeinsamen "alle Datensätze"-Arrays, damit die aktiven Ansichten (Übersicht,
+  // Redaktionsanlässe, Kalender usw.) unverändert einfach über die "normalen" States laufen
+  // und nicht bei jedem Rendern nach archived_at filtern müssen.
+  const [archivedItems, setArchivedItems] = useState<any[]>([]);
+  const [archivedPosts, setArchivedPosts] = useState<any[]>([]);
+  const [archivedTasks, setArchivedTasks] = useState<any[]>([]);
 
   // Auth-Session laden und auf Änderungen (Anmeldung/Abmeldung) reagieren.
   useEffect(() => {
@@ -171,15 +189,19 @@ export function EditorialDashboard() {
     let cancelled = false;
 
     const loadAll = async () => {
-      const [itemsRes, postsRes, tasksRes, materialsRes, quickLinksRes, formatsRes, postRulesRes, taskRulesRes] = await Promise.all([
+      const [itemsRes, postsRes, tasksRes, materialsRes, quickLinksRes, formatQuickLinksRes, formatsRes, postRulesRes, taskRulesRes, archivedItemsRes, archivedPostsRes, archivedTasksRes] = await Promise.all([
         supabase.from('editorial_items').select('*, editorial_formats(name, category, logic_type)').is('archived_at', null).order('created_at'),
         supabase.from('posts').select('*').is('archived_at', null).order('planned_date'),
         supabase.from('tasks').select('*').is('archived_at', null).order('due_date'),
         supabase.from('materials').select('*').order('due_date'),
         supabase.from('quick_links').select('*').order('sort_order'),
+        supabase.from('format_quick_links').select('*').order('sort_order'),
         supabase.from('editorial_formats').select('*').eq('active', true).order('category').order('name'),
         supabase.from('post_rules').select('*').eq('active', true),
         supabase.from('task_rules').select('*').eq('active', true),
+        supabase.from('editorial_items').select('*, editorial_formats(name, category, logic_type)').not('archived_at', 'is', null).order('archived_at', { ascending: false }),
+        supabase.from('posts').select('*').not('archived_at', 'is', null),
+        supabase.from('tasks').select('*').not('archived_at', 'is', null),
       ]);
       if (cancelled) return;
       if (itemsRes.error) console.error('Redaktionsanlässe konnten nicht geladen werden', itemsRes.error);
@@ -187,17 +209,25 @@ export function EditorialDashboard() {
       if (tasksRes.error) console.error('Aufgaben konnten nicht geladen werden', tasksRes.error);
       if (materialsRes.error) console.error('Materialien konnten nicht geladen werden', materialsRes.error);
       if (quickLinksRes.error) console.error('Schnellzugriff-Links konnten nicht geladen werden', quickLinksRes.error);
+      if (formatQuickLinksRes.error) console.error('Format-Schnellzugriff-Links konnten nicht geladen werden', formatQuickLinksRes.error);
       if (formatsRes.error) console.error('Formate konnten nicht geladen werden', formatsRes.error);
       if (postRulesRes.error) console.error('Post-Regeln konnten nicht geladen werden', postRulesRes.error);
       if (taskRulesRes.error) console.error('Aufgaben-Regeln konnten nicht geladen werden', taskRulesRes.error);
+      if (archivedItemsRes.error) console.error('Archivierte Redaktionsanlässe konnten nicht geladen werden', archivedItemsRes.error);
+      if (archivedPostsRes.error) console.error('Archivierte Postings konnten nicht geladen werden', archivedPostsRes.error);
+      if (archivedTasksRes.error) console.error('Archivierte Aufgaben konnten nicht geladen werden', archivedTasksRes.error);
       setItems((itemsRes.data ?? []).map(mapItem));
       setPosts((postsRes.data ?? []).map(mapPost));
       setTasks((tasksRes.data ?? []).map(mapTask));
       setMaterials((materialsRes.data ?? []).map(mapMaterial));
       setQuickLinks((quickLinksRes.data ?? []).map(mapQuickLink));
+      setFormatQuickLinks((formatQuickLinksRes.data ?? []).map(mapFormatQuickLink));
       setFormats((formatsRes.data ?? []).map(mapFormat));
       setPostRules((postRulesRes.data ?? []).map(mapPostRule));
       setTaskRules((taskRulesRes.data ?? []).map(mapTaskRule));
+      setArchivedItems((archivedItemsRes.data ?? []).map(mapItem));
+      setArchivedPosts((archivedPostsRes.data ?? []).map(mapPost));
+      setArchivedTasks((archivedTasksRes.data ?? []).map(mapTask));
     };
 
     void loadAll();
@@ -213,32 +243,72 @@ export function EditorialDashboard() {
         });
       };
 
+    // Wie applyChange, aber für Tabellen mit archived_at: routet je nach aktuellem
+    // archived_at-Wert der Zeile zwischen aktivem und Archiv-State um, statt beide
+    // unabhängig zu pflegen. So landet z. B. ein Post nach dem Archivieren seines
+    // Redaktionsanlasses automatisch im Archiv-State, ein reaktivierter Datensatz
+    // ebenso automatisch zurück im aktiven State – ohne dass die Views selbst
+    // filtern müssten.
+    const applyArchivableChange = <T,>(
+      setActive: (updater: (current: T[]) => T[]) => void,
+      setArchived: (updater: (current: T[]) => T[]) => void,
+      mapRow: (row: any) => T,
+    ) => (payload: any) => {
+      if (payload.eventType === 'DELETE') {
+        setActive((current) => current.filter((entry: any) => entry.id !== payload.old.id));
+        setArchived((current) => current.filter((entry: any) => entry.id !== payload.old.id));
+        return;
+      }
+      const mapped = mapRow(payload.new);
+      const upsert = (current: T[]) => {
+        const exists = current.some((entry: any) => entry.id === (mapped as any).id);
+        return exists ? current.map((entry: any) => (entry as any).id === (mapped as any).id ? mapped : entry) : [...current, mapped];
+      };
+      if (payload.new.archived_at) {
+        setActive((current) => current.filter((entry: any) => entry.id !== (mapped as any).id));
+        setArchived(upsert);
+      } else {
+        setArchived((current) => current.filter((entry: any) => entry.id !== (mapped as any).id));
+        setActive(upsert);
+      }
+    };
+
     // Für editorial_items reicht die generische applyChange()-Logik nicht: Realtime-Payloads
     // enthalten nie die verknüpften Formatdaten (die kommen nur bei einer expliziten Abfrage
     // mit .select(..., editorial_formats(...)) mit). Ohne diese Anreicherung würden Format und
     // Kategorie eines Redaktionsanlasses nach jeder Änderung (Anlegen, Termin bearbeiten usw.)
-    // in der Oberfläche verschwinden, auch wenn der Datensatz in Supabase korrekt ist.
+    // in der Oberfläche verschwinden, auch wenn der Datensatz in Supabase korrekt ist. Zusätzlich
+    // wird hier – analog zu applyArchivableChange – zwischen aktivem und Archiv-State geroutet.
     const applyItemChange = (payload: any) => {
       if (payload.eventType === 'DELETE') {
         setItems((current) => current.filter((entry) => entry.id !== payload.old.id));
+        setArchivedItems((current) => current.filter((entry) => entry.id !== payload.old.id));
         return;
       }
       const format = formatsRef.current.find((entry) => entry.id === payload.new.format_id);
       const enrichedRow = { ...payload.new, editorial_formats: format ? { name: format.name, category: format.category, logic_type: format.logicType } : payload.new.editorial_formats };
       const mapped = mapItem(enrichedRow);
-      setItems((current) => {
+      const upsert = (current: any[]) => {
         const exists = current.some((entry) => entry.id === mapped.id);
         return exists ? current.map((entry) => (entry.id === mapped.id ? mapped : entry)) : [...current, mapped];
-      });
+      };
+      if (payload.new.archived_at) {
+        setItems((current) => current.filter((entry) => entry.id !== mapped.id));
+        setArchivedItems(upsert);
+      } else {
+        setArchivedItems((current) => current.filter((entry) => entry.id !== mapped.id));
+        setItems(upsert);
+      }
     };
 
     const channel = supabase
       .channel('redaktionsdashboard-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'editorial_items' }, applyItemChange)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, applyChange(setPosts, mapPost))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, applyChange(setTasks, mapTask))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts' }, applyArchivableChange(setPosts, setArchivedPosts, mapPost))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, applyArchivableChange(setTasks, setArchivedTasks, mapTask))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'materials' }, applyChange(setMaterials, mapMaterial))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'quick_links' }, applyChange(setQuickLinks, mapQuickLink))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'format_quick_links' }, applyChange(setFormatQuickLinks, mapFormatQuickLink))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'editorial_formats' }, applyChange(setFormats, mapFormat))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'post_rules' }, applyChange(setPostRules, mapPostRule))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'task_rules' }, applyChange(setTaskRules, mapTaskRule))
@@ -353,6 +423,15 @@ export function EditorialDashboard() {
   const detailPosts = posts.filter((post) => post.editorialItemId === openItemId).sort((a, b) => a.plannedDate.localeCompare(b.plannedDate));
   const detailTasks = tasks.filter((task) => task.editorialItemId === openItemId).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
   const detailMaterials = materials.filter((material) => material.editorialItemId === openItemId);
+
+  // Dieselbe "Details öffnen"-Mechanik wie oben, aber für die Archiv-Ansicht: eigener
+  // State/eigene Ableitung, damit ein Klick in der Archiv-Liste nicht versehentlich auch den
+  // normalen Detaildialog für aktive Anlässe öffnet (beide Dialoge sind gleichzeitig gemountet).
+  const [openArchivedItemId, setOpenArchivedItemId] = useState<string | null>(null);
+  const openArchivedItem = archivedItems.find((item) => item.id === openArchivedItemId) ?? null;
+  const archivedDetailPosts = archivedPosts.filter((post) => post.editorialItemId === openArchivedItemId).sort((a, b) => a.plannedDate.localeCompare(b.plannedDate));
+  const archivedDetailTasks = archivedTasks.filter((task) => task.editorialItemId === openArchivedItemId).sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+  const archivedDetailMaterials = materials.filter((material) => material.editorialItemId === openArchivedItemId);
 
   const [editingLink, setEditingLink] = useState<any>(null);
   const [linkDraft, setLinkDraft] = useState({ label: '', url: '' });
@@ -559,19 +638,21 @@ export function EditorialDashboard() {
     });
   }, []);
 
-  // Löscht einen ganzen Redaktionsanlass (Soft-Delete über archived_at) inkl. Kaskaden-
-  // Archivierung aller zugehörigen Postings und Aufgaben. Nutzt dieselbe archived_at-Spalte wie
-  // deletePost/deleteTask – alle Ansichten filtern ohnehin schon nach "archived_at is null" beim
-  // Laden, dadurch verschwinden Postings/Aufgaben automatisch mit, ohne eigene Abfragen dafür.
-  const deleteItem = useCallback((id: string) => {
-    if (typeof window !== 'undefined' && !window.confirm('Diesen Redaktionsanlass wirklich löschen? Zugehörige Postings und Aufgaben werden ebenfalls archiviert.')) return;
+  // Verschiebt einen ganzen Redaktionsanlass ins Archiv (setzt archived_at) inkl. Kaskaden-
+  // Archivierung aller zugehörigen Postings und Aufgaben. Die aktiven Ansichten filtern
+  // ohnehin schon nach "archived_at is null" beim Laden, dadurch verschwinden Postings/
+  // Aufgaben automatisch mit; die Echtzeit-Routen (applyArchivableChange/applyItemChange)
+  // sorgen dafür, dass alles gleichzeitig im Archiv-State auftaucht. Anders als beim früheren,
+  // gleichnamigen Vorgehen ist das hier reversibel (siehe reactivateItem) und läuft daher ohne
+  // Sicherheitsabfrage – die gibt es nur noch bei der endgültigen Löschung (hardDeleteItem).
+  const performArchiveItem = useCallback((id: string) => {
     const now = new Date().toISOString();
     setItems((current) => current.filter((entry) => entry.id !== id));
     setPosts((current) => current.filter((post) => post.editorialItemId !== id));
     setTasks((current) => current.filter((task) => task.editorialItemId !== id));
     setOpenItemId((current) => (current === id ? null : current));
     supabase.from('editorial_items').update({ archived_at: now }).eq('id', id).then(({ error }) => {
-      if (error) console.error('Redaktionsanlass konnte nicht gelöscht werden', error);
+      if (error) console.error('Redaktionsanlass konnte nicht archiviert werden', error);
     });
     supabase.from('posts').update({ archived_at: now }).eq('editorial_item_id', id).then(({ error }) => {
       if (error) console.error('Postings des Anlasses konnten nicht archiviert werden', error);
@@ -580,6 +661,62 @@ export function EditorialDashboard() {
       if (error) console.error('Aufgaben des Anlasses konnten nicht archiviert werden', error);
     });
   }, []);
+
+  // Manueller Auslöser über die "Ins Archiv verschieben"-Buttons in den Listen/Detailansichten.
+  const archiveItem = useCallback((id: string) => {
+    performArchiveItem(id);
+  }, [performArchiveItem]);
+
+  // Endgültiges, unwiderrufliches Löschen eines bereits archivierten Redaktionsanlasses. Die
+  // Fremdschlüssel von posts/tasks/materials auf editorial_items stehen alle auf ON DELETE
+  // CASCADE, ein DELETE hier räumt also automatisch mit auf – separate DELETEs auf posts/tasks
+  // sind anders als bei performArchiveItem nicht nötig.
+  const hardDeleteItem = useCallback((id: string) => {
+    if (typeof window !== 'undefined' && !window.confirm('Diesen Redaktionsanlass endgültig löschen? Das kann nicht rückgängig gemacht werden – inklusive aller zugehörigen Postings, Aufgaben und Materialien.')) return;
+    setArchivedItems((current) => current.filter((entry) => entry.id !== id));
+    setArchivedPosts((current) => current.filter((post) => post.editorialItemId !== id));
+    setArchivedTasks((current) => current.filter((task) => task.editorialItemId !== id));
+    setMaterials((current) => current.filter((material) => material.editorialItemId !== id));
+    supabase.from('editorial_items').delete().eq('id', id).then(({ error }) => {
+      if (error) console.error('Redaktionsanlass konnte nicht endgültig gelöscht werden', error);
+    });
+  }, []);
+
+  // Reaktiviert einen archivierten Anlass NICHT durch bloßes Zurücksetzen von archived_at,
+  // sondern öffnet den normalen Anlegen-Dialog, vorausgefüllt mit den Daten des archivierten
+  // Anlasses. Grund: Ein reaktivierter Anlass (z. B. eine wiederholte Veranstaltung) braucht
+  // ohnehin einen neuen, aktuellen Termin und einen frischen Posting-/Aufgaben-Zeitplan – ein
+  // 1:1-Zurückholen der alten, längst verstrichenen Termine wäre nicht sinnvoll nutzbar.
+  const reactivateItem = useCallback((item: any) => {
+    setItemDraft({
+      formatId: item.formatId,
+      title: item.title,
+      subtitle: item.subtitle ?? '',
+      eventStart: item.eventStart || TODAY,
+      eventStartTime: item.eventStartTime || '09:00',
+      eventEnd: item.eventEnd || '',
+      eventEndTime: item.eventEndTime || '17:00',
+      location: item.location ?? '',
+      instructors: item.instructors ?? '',
+      publicationTargetDate: item.publicationTargetDate || TODAY,
+      eventReferenceDate: item.eventReferenceDate || TODAY,
+      materialReadyDate: item.materialReadyDate ?? '',
+      contentOwner: item.contentOwner,
+      graphicsOwner: item.graphicsOwner,
+      approvalOwner: item.approvalOwner,
+      publishOwner: item.publishOwner,
+    });
+    setItemSaveError('');
+    setCreatingItem(true);
+  }, []);
+
+  // Automatische Archivierung: sobald ein aktiver Anlass isItemComplete() erfüllt (Termin
+  // verstrichen + alle zugehörigen Aufgaben erledigt/gestrichen), wird er ohne weiteres Zutun
+  // archiviert. Läuft bei jeder Änderung an items/tasks erneut – ein bereits archivierter Anlass
+  // taucht danach nicht mehr in "items" auf und wird beim nächsten Durchlauf übersprungen.
+  useEffect(() => {
+    items.filter((item) => isItemComplete(item, tasks, TODAY)).forEach((item) => performArchiveItem(item.id));
+  }, [items, tasks, performArchiveItem]);
 
   const resolveConflict = useCallback(() => {
     if (!conflict || conflict.level !== 'conflict') return;
@@ -700,7 +837,7 @@ export function EditorialDashboard() {
             <SidebarGroupLabel>Verwaltung</SidebarGroupLabel>
             <SidebarGroupContent><SidebarMenu>
               <SidebarMenuItem><SidebarMenuButton isActive={view === 'Formate & Regeln'} tooltip="Formate & Regeln" onClick={() => setView("Formate & Regeln")}><Sparkles /><span>Formate & Regeln</span></SidebarMenuButton></SidebarMenuItem>
-              <SidebarMenuItem><SidebarMenuButton tooltip="Archiv"><Archive /><span>Archiv</span></SidebarMenuButton></SidebarMenuItem>
+              <SidebarMenuItem><SidebarMenuButton isActive={view === 'Archiv'} tooltip="Archiv" onClick={() => setView('Archiv')}><Archive /><span>Archiv</span></SidebarMenuButton></SidebarMenuItem>
             </SidebarMenu></SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
@@ -720,20 +857,35 @@ export function EditorialDashboard() {
         </header>
 
         <div className="workspace">
-          {view !== 'Übersicht' && view !== 'Formate & Regeln' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} itemOptions={itemOptions} />}
+          {view !== 'Übersicht' && view !== 'Formate & Regeln' && view !== 'Archiv' && <FilterBar filters={filters} onChange={setFilters} formatNames={formats.map((format) => format.name)} itemOptions={itemOptions} />}
 
           {view === 'Übersicht' && <Overview items={items} posts={posts} tasks={tasks} conflict={conflict} onNavigate={setView} onResolve={resolveConflict} onEditTask={startEditingTask} onOpenItem={setOpenItemId} quickLinks={quickLinks} onEditLink={startEditingLink} onCreateItem={startCreatingItem} />}
-          {view === 'Redaktionsanlässe' && <EditorialItemsView items={visibleItems} tasks={tasks} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onViewTasksForItem={viewTasksForItem} onDeleteItem={deleteItem} />}
+          {view === 'Redaktionsanlässe' && <EditorialItemsView items={visibleItems} tasks={tasks} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onViewTasksForItem={viewTasksForItem} onArchiveItem={archiveItem} />}
           {view === 'Redaktionsplan' && <EditorialPlan items={items} posts={visiblePosts} onOpenItem={setOpenItemId} onCreateItem={startCreatingItem} onDeletePost={deletePost} />}
           {view === 'Kalender' && <CalendarView items={items} posts={visiblePosts} onMovePost={startMovingPost} />}
           {view === 'Aufgaben' && <TasksView items={items} tasks={visibleTasks} onComplete={completeTask} onEdit={startEditingTask} onCreate={startCreatingTask} />}
           {view === 'Materialien' && <MaterialsView items={items} materials={visibleMaterials} />}
           {view === 'Formate & Regeln' && <FormatsAndRulesView formats={formats} postRules={postRules} />}
+          {view === 'Archiv' && <ArchivView items={archivedItems} onOpenItem={setOpenArchivedItemId} onReactivate={reactivateItem} onHardDelete={hardDeleteItem} />}
         </div>
 
         <TaskEditDialog items={items} editing={editingTask} creating={creatingTask} draft={taskDraft} setDraft={setTaskDraft} onSave={saveTaskEdit} onCancel={cancelTaskEdit} onDelete={deleteTask} />
         <PostMoveDialog items={items} moving={movingPost} date={moveDate} setDate={setMoveDate} onSave={saveMovePost} onCancel={cancelMovePost} />
-        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onDeletePost={deletePost} onDeleteItem={deleteItem} onItemUpdated={applyItemUpdate} />
+        <ItemDetailDialog item={openItem} posts={detailPosts} tasks={detailTasks} materials={detailMaterials} onClose={() => setOpenItemId(null)} onEditTask={startEditingTask} onMovePost={startMovingPost} onDeletePost={deletePost} onArchiveItem={archiveItem} onItemUpdated={applyItemUpdate} />
+        <ItemDetailDialog
+          item={openArchivedItem}
+          posts={archivedDetailPosts}
+          tasks={archivedDetailTasks}
+          materials={archivedDetailMaterials}
+          archived
+          onClose={() => setOpenArchivedItemId(null)}
+          onEditTask={() => {}}
+          onMovePost={() => {}}
+          onDeletePost={() => {}}
+          onReactivate={reactivateItem}
+          onHardDelete={hardDeleteItem}
+          onItemUpdated={() => {}}
+        />
         <QuickLinkEditDialog editing={editingLink} draft={linkDraft} setDraft={setLinkDraft} onSave={saveLinkEdit} onCancel={cancelLinkEdit} />
         <ItemCreateDialog open={creatingItem} formats={formats} draft={itemDraft} setDraft={setItemDraft} onChooseFormat={chooseItemFormat} onSave={saveItemCreate} onCancel={cancelCreatingItem} saving={savingItem} error={itemSaveError} />
 
@@ -825,7 +977,7 @@ function Overview({ items, posts, tasks, conflict, onNavigate, onResolve, onEdit
 // plan-card), damit sich am Design nichts ändert. Klick auf die Zeile öffnet wie gewohnt die
 // Anlass-Detailansicht; der separate "Aufgaben"-Button springt direkt in die Aufgaben-Ansicht,
 // gefiltert auf genau diesen Anlass.
-function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTasksForItem, onDeleteItem }: { items: any[]; tasks: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void; onViewTasksForItem: (itemId: string) => void; onDeleteItem: (itemId: string) => void }) {
+function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTasksForItem, onArchiveItem }: { items: any[]; tasks: any[]; onOpenItem: (itemId: string) => void; onCreateItem: () => void; onViewTasksForItem: (itemId: string) => void; onArchiveItem: (itemId: string) => void }) {
   const sorted = [...items].sort((a, b) => (keyDateFor(a) || '9999-12-31').localeCompare(keyDateFor(b) || '9999-12-31'));
   const openRow = (event: any, itemId: string) => { if (event.key && event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault?.(); onOpenItem(itemId); };
   const statsFor = (itemId: string) => {
@@ -833,9 +985,46 @@ function EditorialItemsView({ items, tasks, onOpenItem, onCreateItem, onViewTask
     return { total: itemTasks.length, done: itemTasks.filter((task) => task.status === 'erledigt').length };
   };
   return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Alle Anlässe im Überblick</p><h1>Redaktionsanlässe</h1></div><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Badge variant="outline">{sorted.length} Anlässe</Badge><Button size="sm" onClick={onCreateItem}><Plus /> Neuer Redaktionsanlass</Button></div></div>
-    <div className="desktop-table"><table><thead><tr><th>Termin/Ziel</th><th>Anlass</th><th>Fortschritt</th><th>Verantwortung</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <tr key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{date ? formatDate(date) : '—'}</strong></td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{total ? <Badge variant="outline">{done}/{total} erledigt</Badge> : <small>keine Aufgaben</small>}</td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }}>Aufgaben <ChevronRight size={14} /></Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onDeleteItem(item.id); }} aria-label={`${item.title}: Anlass löschen`}><Trash2 size={15} /></Button></td></tr>; })}</tbody></table></div>
-    <div className="mobile-cards">{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <article className="plan-card" key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{date && ` · ${formatDate(date)}`}</span><h3>{item.title}</h3></div>{total ? <Badge variant="outline">{done}/{total}</Badge> : <small>keine Aufgaben</small>}<div className="plan-card-row"><strong>{date ? fullDate(date) : 'kein Termin'}</strong><span>{item.contentOwner} → {item.publishOwner}</span></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>Aufgaben <ChevronRight size={12} /></button><button type="button" onClick={(event) => { event.stopPropagation(); onDeleteItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Trash2 size={12} /> Löschen</button></div></article>; })}</div>
+    <div className="desktop-table"><table><thead><tr><th>Termin/Ziel</th><th>Anlass</th><th>Fortschritt</th><th>Verantwortung</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <tr key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{date ? formatDate(date) : '—'}</strong></td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{total ? <Badge variant="outline">{done}/{total} erledigt</Badge> : <small>keine Aufgaben</small>}</td><td><span>{item.contentOwner}</span><small>→ {item.publishOwner}</small></td><td style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Button variant="ghost" size="sm" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }}>Aufgaben <ChevronRight size={14} /></Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} aria-label={`${item.title}: Ins Archiv verschieben`}><Archive size={15} /></Button></td></tr>; })}</tbody></table></div>
+    <div className="mobile-cards">{sorted.map((item) => { const date = keyDateFor(item); const { total, done } = statsFor(item.id); return <article className="plan-card" key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{date && ` · ${formatDate(date)}`}</span><h3>{item.title}</h3></div>{total ? <Badge variant="outline">{done}/{total}</Badge> : <small>keine Aufgaben</small>}<div className="plan-card-row"><strong>{date ? fullDate(date) : 'kein Termin'}</strong><span>{item.contentOwner} → {item.publishOwner}</span></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onViewTasksForItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>Aufgaben <ChevronRight size={12} /></button><button type="button" onClick={(event) => { event.stopPropagation(); onArchiveItem(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Archive size={12} /> Ins Archiv verschieben</button></div></article>; })}</div>
     {!sorted.length && <div className="empty-state"><PackageCheck /><h3>Keine Redaktionsanlässe</h3><p>Für diese Filterkombination gibt es aktuell keine Anlässe.</p></div>}
+  </section>;
+}
+
+// Archiv-Ansicht: eigene lokale Suche/Filter (bewusst getrennt von der globalen FilterBar,
+// die für Archiv-Ansichten ausgeblendet ist, siehe view-Switch weiter unten) – Format- und
+// Zeitraum-Filter beziehen sich hier auf die archivierten Anlässe selbst, nicht auf Postings/
+// Aufgaben, die im Archiv gar nicht einzeln aufgelistet werden.
+function ArchivView({ items, onOpenItem, onReactivate, onHardDelete }: { items: any[]; onOpenItem: (itemId: string) => void; onReactivate: (item: any) => void; onHardDelete: (id: string) => void }) {
+  const [search, setSearch] = useState('');
+  const [formatFilter, setFormatFilter] = useState('Alle');
+  const [periodFilter, setPeriodFilter] = useState('Alle');
+
+  const formatOptions = Array.from(new Set(items.map((item) => item.format).filter(Boolean))).sort((a, b) => (a as string).localeCompare(b as string, 'de'));
+
+  const filtered = items
+    .filter((item) => !search.trim() || item.title.toLowerCase().includes(search.trim().toLowerCase()))
+    .filter((item) => formatFilter === 'Alle' || item.format === formatFilter)
+    .filter((item) => periodFilter === 'Alle' || archivedPeriod(item.archivedAt) === periodFilter)
+    .sort((a, b) => (b.archivedAt || '').localeCompare(a.archivedAt || ''));
+
+  const openRow = (event: any, itemId: string) => { if (event.key && event.key !== 'Enter' && event.key !== ' ') return; event.preventDefault?.(); onOpenItem(itemId); };
+
+  return <section className="panel wide-panel"><div className="panel-heading"><div><p className="eyebrow">Abgeschlossene und archivierte Anlässe</p><h1>Archiv</h1></div><Badge variant="outline">{filtered.length} Anlässe</Badge></div>
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+      <Input placeholder="Suche nach Titel …" value={search} onChange={(event) => setSearch(event.target.value)} style={{ maxWidth: 240 }} />
+      <Select value={formatFilter} onValueChange={(value) => setFormatFilter(value as string)}>
+        <SelectTrigger className="task-form-select" style={{ width: 200 }}><SelectValue placeholder="Format" /></SelectTrigger>
+        <SelectContent><SelectItem value="Alle">Alle Formate</SelectItem>{formatOptions.map((name) => <SelectItem key={name as string} value={name as string}>{name}</SelectItem>)}</SelectContent>
+      </Select>
+      <Select value={periodFilter} onValueChange={(value) => setPeriodFilter(value as string)}>
+        <SelectTrigger className="task-form-select" style={{ width: 180 }}><SelectValue placeholder="Zeitraum" /></SelectTrigger>
+        <SelectContent><SelectItem value="Alle">Alle Zeiträume</SelectItem><SelectItem value="Letzte 30 Tage">Letzte 30 Tage</SelectItem><SelectItem value="Dieses Jahr">Dieses Jahr</SelectItem><SelectItem value="Älter">Älter</SelectItem></SelectContent>
+      </Select>
+    </div>
+    <div className="desktop-table"><table><thead><tr><th>Archiviert am</th><th>Anlass</th><th>Termin</th><th><span className="sr-only">Aktionen</span></th></tr></thead><tbody>{filtered.map((item) => { const date = keyDateFor(item); return <tr key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><td><strong>{item.archivedAt ? formatDate(item.archivedAt.slice(0, 10)) : '—'}</strong></td><td><span className="category-line">{item.category}</span><strong>{item.title}</strong><small>{item.format}</small></td><td>{date ? formatDate(date) : '—'}</td><td style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onReactivate(item); }} aria-label={`${item.title}: Reaktivieren`}><RotateCcw size={15} /></Button><Button variant="ghost" size="icon-sm" onClick={(event) => { event.stopPropagation(); onHardDelete(item.id); }} aria-label={`${item.title}: Endgültig löschen`}><Trash2 size={15} /></Button></td></tr>; })}</tbody></table></div>
+    <div className="mobile-cards">{filtered.map((item) => { const date = keyDateFor(item); return <article className="plan-card" key={item.id} role="button" tabIndex={0} style={{ cursor: 'pointer' }} onClick={() => onOpenItem(item.id)} onKeyDown={(event) => openRow(event, item.id)} aria-label={`${item.title}: Details öffnen`}><div><span className="category-line">{item.format}{item.archivedAt && ` · archiviert ${formatDate(item.archivedAt.slice(0, 10))}`}</span><h3>{item.title}</h3></div><div className="plan-card-row"><strong>{date ? fullDate(date) : 'kein Termin'}</strong></div><div className="meta"><button type="button" onClick={(event) => { event.stopPropagation(); onReactivate(item); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><RotateCcw size={12} /> Reaktivieren</button><button type="button" onClick={(event) => { event.stopPropagation(); onHardDelete(item.id); }} style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Trash2 size={12} /> Endgültig löschen</button></div></article>; })}</div>
+    {!filtered.length && <div className="empty-state"><PackageCheck /><h3>Keine archivierten Anlässe</h3><p>Für diese Filterkombination gibt es aktuell nichts im Archiv.</p></div>}
   </section>;
 }
 
@@ -872,7 +1061,7 @@ function CalendarView({ items, posts, onMovePost }: { items: any[]; posts: any[]
 // (TaskEditDialog / PostMoveDialog) obendrüber, statt eigene Bearbeitungslogik
 // zu duplizieren. Da diese Ansicht neu ist, gibt es dafür noch keine eigenen
 // CSS-Klassen im Stylesheet — Layout daher wie bei AuthGate per Inline-Style.
-function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, onMovePost, onDeletePost, onDeleteItem, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onDeletePost: (id: string) => void; onDeleteItem: (id: string) => void; onItemUpdated: (item: any) => void }) {
+function ItemDetailDialog({ item, posts, tasks, materials, archived, onClose, onEditTask, onMovePost, onDeletePost, onArchiveItem, onReactivate, onHardDelete, onItemUpdated }: { item: any; posts: any[]; tasks: any[]; materials: any[]; archived?: boolean; onClose: () => void; onEditTask: (task: any) => void; onMovePost: (post: any) => void; onDeletePost: (id: string) => void; onArchiveItem?: (id: string) => void; onReactivate?: (item: any) => void; onHardDelete?: (id: string) => void; onItemUpdated: (item: any) => void }) {
   const row: CSSProperties = { display: 'grid', gridTemplateColumns: '1fr 2fr 1fr auto', gap: 12, alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border, #e5e5e5)', textAlign: 'left', width: '100%', background: 'none', border: 'none', borderBottomWidth: 1, borderBottomStyle: 'solid' };
   const sectionHeading: CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, margin: '20px 0 8px', fontSize: 14, fontWeight: 600 };
   const empty: CSSProperties = { fontSize: 13, opacity: 0.7, padding: '4px 0' };
@@ -924,7 +1113,7 @@ function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, 
           <div style={{ padding: '12px 14px', border: '1px solid var(--border, #e5e5e5)', borderRadius: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <h3 style={{ ...sectionHeading, margin: 0 }}><MapPin size={16} /> Veranstaltungsdetails</h3>
-              {!editingDetails && <Button variant="ghost" size="sm" onClick={() => setEditingDetails(true)}><Pencil size={14} /> Bearbeiten</Button>}
+              {!editingDetails && !archived && <Button variant="ghost" size="sm" onClick={() => setEditingDetails(true)}><Pencil size={14} /> Bearbeiten</Button>}
             </div>
             {!editingDetails ? (
               <div style={{ display: 'grid', gap: 4, fontSize: 14, marginTop: 8 }}>
@@ -952,18 +1141,27 @@ function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, 
               <span>{formatDate(post.plannedDate)}</span>
               <span>{post.type}{post.conditional && <small> · bedingt</small>}</span>
               <Badge className={cn('status-badge', `status-${post.status}`)} variant={post.status === 'blockiert' ? 'destructive' : 'secondary'}>{statusLabel(post.status)}</Badge>
-              <div style={{ display: 'flex', gap: 4 }}><Button variant="ghost" size="sm" onClick={() => onMovePost(post)}>Verschieben</Button><Button variant="ghost" size="sm" onClick={() => onDeletePost(post.id)} aria-label="Termin löschen"><Trash2 size={14} /></Button></div>
+              {archived ? <span /> : <div style={{ display: 'flex', gap: 4 }}><Button variant="ghost" size="sm" onClick={() => onMovePost(post)}>Verschieben</Button><Button variant="ghost" size="sm" onClick={() => onDeletePost(post.id)} aria-label="Termin löschen"><Trash2 size={14} /></Button></div>}
             </div>
           )) : <p style={empty}>Keine Postings vorhanden.</p>}
 
           <h3 style={sectionHeading}><ClipboardCheck size={16} /> Aufgaben</h3>
           {tasks.length ? tasks.map((task) => (
-            <button type="button" style={row} key={task.id} onClick={() => onEditTask(task)} aria-label={`${task.title} bearbeiten`}>
-              <span>{formatDate(task.dueDate)}</span>
-              <span>{task.title}</span>
-              <span>{task.owner}</span>
-              <Badge className={cn('status-badge', task.blocked ? 'status-problem' : `status-${task.status}`)} variant={task.blocked ? 'destructive' : 'secondary'}>{task.blocked ? 'blockiert' : statusLabel(task.status)}</Badge>
-            </button>
+            archived ? (
+              <div style={row} key={task.id}>
+                <span>{formatDate(task.dueDate)}</span>
+                <span>{task.title}</span>
+                <span>{task.owner}</span>
+                <Badge className={cn('status-badge', `status-${task.status}`)} variant="secondary">{statusLabel(task.status)}</Badge>
+              </div>
+            ) : (
+              <button type="button" style={row} key={task.id} onClick={() => onEditTask(task)} aria-label={`${task.title} bearbeiten`}>
+                <span>{formatDate(task.dueDate)}</span>
+                <span>{task.title}</span>
+                <span>{task.owner}</span>
+                <Badge className={cn('status-badge', task.blocked ? 'status-problem' : `status-${task.status}`)} variant={task.blocked ? 'destructive' : 'secondary'}>{task.blocked ? 'blockiert' : statusLabel(task.status)}</Badge>
+              </button>
+            )
           )) : <p style={empty}>Keine Aufgaben vorhanden.</p>}
 
           <h3 style={sectionHeading}><FileImage size={16} /> Materialien</h3>
@@ -977,7 +1175,11 @@ function ItemDetailDialog({ item, posts, tasks, materials, onClose, onEditTask, 
           )) : <p style={empty}>Keine Materialien vorhanden.</p>}
         </div>
         <DialogFooter>
-          {item && <Button variant="destructive" onClick={() => onDeleteItem(item.id)} style={{ marginRight: 'auto' }}><Trash2 size={14} /> Anlass löschen</Button>}
+          {item && !archived && <Button variant="outline" onClick={() => onArchiveItem?.(item.id)} style={{ marginRight: 'auto' }}><Archive size={14} /> Ins Archiv verschieben</Button>}
+          {item && archived && <div style={{ display: 'flex', gap: 8, marginRight: 'auto' }}>
+            <Button variant="outline" onClick={() => onReactivate?.(item)}><RotateCcw size={14} /> Reaktivieren</Button>
+            <Button variant="destructive" onClick={() => onHardDelete?.(item.id)}><Trash2 size={14} /> Endgültig löschen</Button>
+          </div>}
           <Button variant="outline" onClick={onClose}>Schließen</Button>
         </DialogFooter>
       </DialogContent>
